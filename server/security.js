@@ -98,6 +98,7 @@ export function getCorsOptions() {
       if (!origin) return callback(null, true);
       if (isLocalOrigin(origin)) return callback(null, true);
       if (origin === 'https://lingoo-ooo.vercel.app') return callback(null, true);
+      if (origin === 'https://lingo-self.vercel.app') return callback(null, true);
       if (vercelUrl && origin === vercelUrl) return callback(null, true);
       if (isVercelOrigin(origin)) return callback(null, true);
       if (extraOrigins.includes(origin)) return callback(null, true);
