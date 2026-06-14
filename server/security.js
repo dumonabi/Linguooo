@@ -81,8 +81,8 @@ function isLocalOrigin(origin) {
 }
 
 function isVercelOrigin(origin) {
-  return /^https:\/\/lingo(-[a-z0-9-]+)?\.vercel\.app$/.test(origin)
-    || /^https:\/\/lingo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin);
+  return /^https:\/\/lingoo-ooo(-[a-z0-9-]+)?\.vercel\.app$/.test(origin)
+    || /^https:\/\/lingoo-ooo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin);
 }
 
 export function getCorsOptions() {
@@ -97,7 +97,7 @@ export function getCorsOptions() {
     origin(origin, callback) {
       if (!origin) return callback(null, true);
       if (isLocalOrigin(origin)) return callback(null, true);
-      if (origin === 'https://lingo-self.vercel.app') return callback(null, true);
+      if (origin === 'https://lingoo-ooo.vercel.app') return callback(null, true);
       if (vercelUrl && origin === vercelUrl) return callback(null, true);
       if (isVercelOrigin(origin)) return callback(null, true);
       if (extraOrigins.includes(origin)) return callback(null, true);
