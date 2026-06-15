@@ -1,6 +1,14 @@
 import { createLangPicker, renderFlag } from './lang-picker.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { apiFetch, clearAuthToken, getAuthToken, setAuthToken } from './auth.js';
+import {
+  isRetryableSendError,
+  listPendingRecordings,
+  removePendingRecording,
+  retryDelayMs,
+  savePendingRecording,
+  updatePendingRecording,
+} from './pending-audio.js';
 
 const STORAGE_KEY = 'lingo-languages';
 const DEFAULT_LANG1 = 'en';
@@ -40,6 +48,8 @@ let progressRaf = null;
 let recordingProgressRaf = null;
 let progressStartedAt = 0;
 let progressEstimateMs = 4000;
+let pendingQueueBusy = false;
+let pendingRetryTimer = null;
 
 function findLang(code) {
   return state.languages.find((l) => l.code === code);
@@ -58,14 +68,41 @@ function prefetchAudio(msg) {
   return loadMessageAudio(msg);
 }
 
+function audioCacheKey(msg) {
+  return `${msg.translated}|${msg.targetLanguage}`;
+}
+
+function invalidateMessageAudio(msg) {
+  if (msg.audioUrl) {
+    URL.revokeObjectURL(msg.audioUrl);
+    msg.audioUrl = null;
+  }
+  msg._audioPromise = null;
+}
+
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(message)), ms);
+    }),
+  ]);
+}
+
 async function loadMessageAudio(msg, { retry = false } = {}) {
+  const key = audioCacheKey(msg);
+  if (msg._audioKey && msg._audioKey !== key) {
+    invalidateMessageAudio(msg);
+  }
+  msg._audioKey = key;
+
   if (msg.audioUrl) return;
 
   if (msg._audioPromise && !retry) {
     try {
-      await msg._audioPromise;
+      await withTimeout(msg._audioPromise, 25000, 'Audio timed out — tap Listen again');
     } catch {
-      msg._audioPromise = null;
+      invalidateMessageAudio(msg);
     }
     if (msg.audioUrl) return;
   }
@@ -89,11 +126,42 @@ async function loadMessageAudio(msg, { retry = false } = {}) {
   });
 
   try {
-    await msg._audioPromise;
+    await withTimeout(msg._audioPromise, 25000, 'Audio timed out — tap Listen again');
   } catch (err) {
-    msg._audioPromise = null;
+    invalidateMessageAudio(msg);
     throw err;
   }
+}
+
+function playAudioUrl(url) {
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(url);
+    state.currentAudio = audio;
+    let settled = false;
+
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      state.currentAudio = null;
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      audio.pause();
+      finish(() => reject(new Error('Playback timed out — tap again')));
+    }, 90000);
+
+    audio.onended = () => finish(resolve);
+    audio.onerror = () => finish(() => reject(new Error('Playback failed')));
+    audio.play().catch((err) => finish(() => reject(err)));
+  });
+}
+
+function resetListenBtn(btn) {
+  btn.classList.remove('playing');
+  btn.disabled = false;
+  delete btn.dataset.busy;
 }
 
 async function init() {
@@ -110,8 +178,11 @@ async function init() {
   initPickers();
   bindEvents();
   bindMicHelp();
+  bindPendingQueue();
   checkMicSupport();
   updateMicState();
+  void refreshPendingBanner();
+  schedulePendingRetry(1500);
 }
 
 async function ensureAuthenticated() {
@@ -542,6 +613,269 @@ function stopProgress() {
   progressWrap.classList.remove('is-recording');
 }
 
+function buildConversationContext() {
+  return state.messages
+    .filter((m) => [state.lang1, state.lang2].includes(m.detectedLanguage))
+    .slice(-2)
+    .map((m) => ({
+      detectedLanguage: m.detectedLanguage,
+      original: m.original,
+      translated: m.translated,
+    }));
+}
+
+function applyTranslationResult(data) {
+  const message = {
+    id: Date.now(),
+    original: data.sourceText || data.rawText,
+    translated: data.translatedText,
+    detectedLanguage: data.detectedLanguage,
+    targetLanguage: data.targetLanguage,
+    audioUrl: null,
+  };
+
+  state.messages.push(message);
+  renderMessage(message);
+  prefetchAudio(message).catch(() => {});
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchConverse(form, { attempts = 3 } = {}) {
+  let lastError;
+  let lastRes;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await withTimeout(
+        apiFetch('/api/converse', { method: 'POST', body: form }),
+        90000,
+        'Request timed out — message saved',
+      );
+      lastRes = res;
+
+      if ((res.status === 502 || res.status === 503 || res.status === 504 || res.status === 408)
+        && attempt < attempts) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+
+      return res;
+    } catch (err) {
+      lastError = err;
+      if (attempt < attempts) {
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+    }
+  }
+
+  if (lastRes) return lastRes;
+
+  const error = new Error(lastError?.message || 'Cannot connect to server');
+  error.retryable = true;
+  throw error;
+}
+
+async function submitRecording({ blob, mimeType, recordingMs, lang1, lang2, context, pendingId }) {
+  const id = pendingId || crypto.randomUUID();
+
+  if (!pendingId) {
+    await savePendingRecording({
+      id,
+      blob,
+      mimeType,
+      lang1,
+      lang2,
+      contextJson: JSON.stringify(context),
+      recordingMs,
+      createdAt: Date.now(),
+    });
+  }
+
+  const form = new FormData();
+  form.append('audio', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
+  form.append('lang1', lang1);
+  form.append('lang2', lang2);
+  form.append('durationMs', String(recordingMs));
+  form.append('context', JSON.stringify(context));
+
+  let res;
+  try {
+    res = await fetchConverse(form, { attempts: pendingId ? 2 : 3 });
+  } catch (err) {
+    const current = (await listPendingRecordings()).find((item) => item.id === id);
+    await updatePendingRecording(id, {
+      attempts: (current?.attempts || 0) + 1,
+      lastError: err.message,
+    });
+    throw err;
+  }
+
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+  }
+
+  if (res.status === 401) {
+    const error = new Error('Session expired — enter the access code again');
+    error.retryable = true;
+    throw error;
+  }
+  if (res.status === 429) {
+    const error = new Error(data.error || 'Too many messages this hour');
+    error.retryable = true;
+    throw error;
+  }
+  if (res.status === 502 || res.status === 503 || res.status === 504 || res.status === 408) {
+    const error = new Error('Connection interrupted — message saved for retry');
+    error.retryable = true;
+    await updatePendingRecording(id, {
+      attempts: (((await listPendingRecordings()).find((item) => item.id === id)?.attempts) || 0) + 1,
+      lastError: error.message,
+    });
+    throw error;
+  }
+  if (!res.ok) {
+    const error = new Error(data.error || 'Processing failed');
+    error.retryable = isRetryableSendError(error, res);
+    if (error.retryable) {
+      await updatePendingRecording(id, { lastError: error.message });
+    }
+    throw error;
+  }
+  if (!data.translatedText?.trim()) {
+    const error = new Error('Could not translate — message saved for retry');
+    error.retryable = true;
+    await updatePendingRecording(id, { lastError: error.message });
+    throw error;
+  }
+
+  await removePendingRecording(id);
+  return data;
+}
+
+async function refreshPendingBanner() {
+  const items = await listPendingRecordings();
+  const banner = $('#pending-banner');
+  if (!items.length) {
+    banner.hidden = true;
+    return;
+  }
+
+  $('#pending-text').textContent = items.length === 1
+    ? '1 message saved on this device. We will retry automatically when the connection is back.'
+    : `${items.length} messages saved on this device. We will retry automatically when the connection is back.`;
+  banner.hidden = false;
+}
+
+function schedulePendingRetry(delayMs = 5000) {
+  clearTimeout(pendingRetryTimer);
+  pendingRetryTimer = setTimeout(() => {
+    void processPendingQueue();
+  }, delayMs);
+}
+
+function wakePendingQueue() {
+  void refreshPendingBanner();
+  schedulePendingRetry(400);
+}
+
+async function processPendingQueue() {
+  if (pendingQueueBusy || state.isProcessing || state.isRecording) return;
+  if (!navigator.onLine) {
+    await refreshPendingBanner();
+    return;
+  }
+
+  const items = await listPendingRecordings();
+  if (!items.length) {
+    await refreshPendingBanner();
+    return;
+  }
+
+  pendingQueueBusy = true;
+  const sorted = items.sort((a, b) => a.createdAt - b.createdAt);
+
+  for (const item of sorted) {
+    if (state.isRecording) break;
+
+    try {
+      state.isProcessing = true;
+      mainMicBtn.disabled = true;
+      startProgress(estimateProcessingMs(item.recordingMs, item.blob?.size || 0));
+
+      const context = JSON.parse(item.contextJson || '[]');
+      const data = await submitRecording({
+        blob: item.blob,
+        mimeType: item.mimeType,
+        recordingMs: item.recordingMs,
+        lang1: item.lang1,
+        lang2: item.lang2,
+        context,
+        pendingId: item.id,
+      });
+
+      applyTranslationResult(data);
+      await finishProgress();
+    } catch (err) {
+      if (err.retryable !== false) {
+        if (err.message?.includes('Session expired') && authRequired) {
+          showAuthGate();
+        }
+        await updatePendingRecording(item.id, {
+          attempts: (item.attempts || 0) + 1,
+          lastError: err.message || 'Retry later',
+        });
+        showToast(err.message || 'Message saved — will retry');
+        schedulePendingRetry(retryDelayMs((item.attempts || 0) + 1));
+        break;
+      }
+      await removePendingRecording(item.id);
+      showToast(err.message);
+    } finally {
+      state.isProcessing = false;
+      resetMicUI();
+    }
+  }
+
+  pendingQueueBusy = false;
+  await refreshPendingBanner();
+}
+
+function bindPendingQueue() {
+  $('#pending-retry').addEventListener('click', () => {
+    void processPendingQueue();
+  });
+  $('#pending-dismiss').addEventListener('click', () => {
+    $('#pending-banner').hidden = true;
+  });
+  window.addEventListener('online', wakePendingQueue);
+  window.addEventListener('focus', wakePendingQueue);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') wakePendingQueue();
+  });
+  window.addEventListener('pageshow', (event) => {
+    if (event.persisted) wakePendingQueue();
+  });
+}
+
+async function sendRecordingForTranslation({ blob, mimeType, recordingMs }) {
+  const data = await submitRecording({
+    blob,
+    mimeType,
+    recordingMs,
+    lang1: state.lang1,
+    lang2: state.lang2,
+    context: buildConversationContext(),
+  });
+  applyTranslationResult(data);
+}
+
 async function toggleRecording() {
   if (!languagesReady()) {
     showToast('Select two languages');
@@ -635,47 +969,17 @@ async function stopRecording() {
   startProgress(estimateProcessingMs(recordingMs, blob.size));
 
   try {
-    const form = new FormData();
-    form.append('audio', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
-    form.append('lang1', state.lang1);
-    form.append('lang2', state.lang2);
-    form.append('durationMs', String(recordingMs));
-    form.append('context', JSON.stringify(
-      state.messages
-        .filter((m) => [state.lang1, state.lang2].includes(m.detectedLanguage))
-        .slice(-2)
-        .map((m) => ({
-          detectedLanguage: m.detectedLanguage,
-          original: m.original,
-          translated: m.translated,
-        }))
-    ));
-
-    const res = await apiFetch('/api/converse', { method: 'POST', body: form }).catch(() => {
-      throw new Error('Cannot connect to server');
-    });
-
-    const data = await res.json();
-    if (res.status === 429) throw new Error(data.error || 'Too many messages this hour');
-    if (res.status === 401) throw new Error('Session expired — refresh and enter the code again');
-    if (!res.ok) throw new Error(data.error || 'Processing failed');
-    if (!data.translatedText?.trim()) throw new Error('Could not translate');
-
-    const message = {
-      id: Date.now(),
-      original: data.sourceText || data.rawText,
-      translated: data.translatedText,
-      detectedLanguage: data.detectedLanguage,
-      targetLanguage: data.targetLanguage,
-      audioUrl: null,
-    };
-
-    state.messages.push(message);
-    renderMessage(message);
-    prefetchAudio(message).catch(() => {});
+    await sendRecordingForTranslation({ blob, mimeType, recordingMs });
     await finishProgress();
+    await refreshPendingBanner();
   } catch (err) {
-    showToast(err.message);
+    if (err.retryable !== false) {
+      await refreshPendingBanner();
+      showToast(err.message || 'Message saved — will retry automatically');
+      schedulePendingRetry(3000);
+    } else {
+      showToast(err.message);
+    }
   } finally {
     resetMicUI();
   }
@@ -705,6 +1009,9 @@ function resetMicUI() {
 }
 
 async function playTranslation(msg, btn) {
+  if (btn.dataset.busy === '1') return;
+  btn.dataset.busy = '1';
+
   if (state.currentAudio) {
     state.currentAudio.pause();
     state.currentAudio = null;
@@ -714,30 +1021,22 @@ async function playTranslation(msg, btn) {
   btn.disabled = true;
 
   try {
-    try {
-      await loadMessageAudio(msg);
-    } catch {
-      await loadMessageAudio(msg, { retry: true });
+    if (!msg.audioUrl) {
+      try {
+        await loadMessageAudio(msg);
+      } catch {
+        await loadMessageAudio(msg, { retry: true });
+      }
     }
 
     if (!msg.audioUrl) throw new Error('Audio not ready — tap Listen again');
 
-    const audio = new Audio(msg.audioUrl);
-    state.currentAudio = audio;
-
-    await new Promise((resolve, reject) => {
-      audio.onended = () => {
-        state.currentAudio = null;
-        resolve();
-      };
-      audio.onerror = () => reject(new Error('Playback failed'));
-      audio.play().catch(reject);
-    });
+    await playAudioUrl(msg.audioUrl);
   } catch (err) {
+    invalidateMessageAudio(msg);
     showToast(err.message);
   } finally {
-    btn.classList.remove('playing');
-    btn.disabled = false;
+    resetListenBtn(btn);
   }
 }
 

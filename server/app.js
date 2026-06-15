@@ -130,6 +130,68 @@ function stripTrailingPeriod(text) {
   return text.replace(/[.。．]+$/u, '').trimEnd();
 }
 
+function textScriptHint(text) {
+  if (!text) return 'unknown';
+  if (/[\u0E00-\u0E7F]/.test(text)) return 'thai';
+  if (/[\u4E00-\u9FFF]/.test(text)) return 'cjk';
+  if (/[\u3040-\u30FF]/.test(text)) return 'ja';
+  if (/[\uAC00-\uD7AF]/.test(text)) return 'ko';
+  if (/[\u0400-\u04FF]/.test(text)) return 'cyrillic';
+  if (/[\u0600-\u06FF]/.test(text)) return 'arabic';
+  if (/[a-zA-ZáéíóúñüÁÉÍÓÚÑ¿¡]/.test(text)) return 'latin';
+  return 'unknown';
+}
+
+const LATIN_LANGS = new Set([
+  'en', 'es', 'fr', 'de', 'it', 'pt', 'ca', 'nl', 'sv', 'da', 'no', 'fi',
+  'pl', 'cs', 'sk', 'ro', 'hu', 'tr', 'vi', 'id', 'ms', 'tl', 'sw', 'af',
+]);
+
+function hintMatchesLang(hint, code) {
+  if (hint === 'unknown') return null;
+  if (hint === 'thai') return code === 'th';
+  if (hint === 'cjk') return ['zh', 'yue', 'wuu'].includes(code);
+  if (hint === 'ja') return code === 'ja';
+  if (hint === 'ko') return code === 'ko';
+  if (hint === 'cyrillic') return ['ru', 'uk', 'bg', 'sr', 'mk'].includes(code);
+  if (hint === 'arabic') return ['ar', 'fa', 'ur', 'he'].includes(code);
+  if (hint === 'latin') return LATIN_LANGS.has(code);
+  return null;
+}
+
+function alignTranslationFields(sourceText, translatedText, detected, target) {
+  let source = sourceText;
+  let translated = translatedText;
+  const sourceHint = textScriptHint(source);
+  const translatedHint = textScriptHint(translated);
+
+  const sourceOk = hintMatchesLang(sourceHint, detected);
+  const translatedOk = hintMatchesLang(translatedHint, target);
+
+  if (sourceOk === false && translatedOk === true) {
+    return { sourceText: translated, translatedText: source };
+  }
+  if (sourceOk === true && translatedOk === false) {
+    return { sourceText: source, translatedText: translated };
+  }
+  if (sourceOk === false && translatedOk === false && sourceHint !== 'unknown' && translatedHint !== 'unknown') {
+    const sourceLooksTarget = hintMatchesLang(sourceHint, target);
+    const translatedLooksDetected = hintMatchesLang(translatedHint, detected);
+    if (sourceLooksTarget === true && translatedLooksDetected === true) {
+      return { sourceText: translated, translatedText: source };
+    }
+  }
+
+  return { sourceText: source, translatedText: translated };
+}
+
+function inferDetectedFromText(text, lang1, lang2) {
+  const hint = textScriptHint(text);
+  if (hintMatchesLang(hint, lang1) === true) return lang1;
+  if (hintMatchesLang(hint, lang2) === true) return lang2;
+  return null;
+}
+
 async function translateText(openai, text, lang1, lang2, context) {
   const name1 = LANGUAGE_NAMES[lang1] || lang1;
   const name2 = LANGUAGE_NAMES[lang2] || lang2;
@@ -159,16 +221,24 @@ async function translateText(openai, text, lang1, lang2, context) {
 
   const result = JSON.parse(completion.choices[0]?.message?.content || '{}');
 
-  const detected = normalizeLangCode(result.detectedLanguage, lang1, lang2)
+  let detected = normalizeLangCode(result.detectedLanguage, lang1, lang2)
+    || inferDetectedFromText(text, lang1, lang2)
     || normalizeLangCode(result.targetLanguage, lang1, lang2)
     || lang1;
   const target = detected === lang1 ? lang2 : lang1;
 
+  let sourceText = stripTrailingPeriod(result.sourceText || text.trim());
+  let translatedText = stripTrailingPeriod(result.translatedText || '');
+
+  const aligned = alignTranslationFields(sourceText, translatedText, detected, target);
+  sourceText = aligned.sourceText;
+  translatedText = aligned.translatedText;
+
   return {
     detectedLanguage: detected,
-    sourceText: stripTrailingPeriod(result.sourceText || text.trim()),
-    translatedText: stripTrailingPeriod(result.translatedText || ''),
-    targetLanguage: normalizeLangCode(result.targetLanguage, lang1, lang2) || target,
+    sourceText,
+    translatedText,
+    targetLanguage: target,
   };
 }
 
