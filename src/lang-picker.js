@@ -1,11 +1,18 @@
-export const CATALAN_FLAG_SVG = `<svg class="flag-svg flag-catalan" viewBox="0 0 27 18" aria-hidden="true"><rect fill="#FCDD09" width="27" height="18"/><rect fill="#DA121A" y="2" height="2" width="27"/><rect fill="#DA121A" y="6" height="2" width="27"/><rect fill="#DA121A" y="10" height="2" width="27"/><rect fill="#DA121A" y="14" height="2" width="27"/></svg>`;
+import { formatFlagSvg, getFlagSvg } from './flag-svgs.js';
+
+const GLOBE_FALLBACK_SVG = `<svg class="flag-svg flag-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.8 3.1 2.8 14.9 0 18M12 3c-2.8 3.1-2.8 14.9 0 18"/></svg>`;
 
 export function renderFlag(lang, className = 'flag-icon') {
-  if (!lang) return '<span class="flag-emoji">🌐</span>';
-  if (lang.customFlag === 'catalan') {
-    return `<span class="${className}">${CATALAN_FLAG_SVG}</span>`;
+  if (!lang) {
+    return `<span class="flag-frame ${className}">${GLOBE_FALLBACK_SVG}</span>`;
   }
-  return `<span class="flag-emoji ${className}">${lang.flag || '🌐'}</span>`;
+
+  const svg = getFlagSvg(lang.flagCode);
+  if (svg) {
+    return `<span class="flag-frame ${className}">${formatFlagSvg(svg)}</span>`;
+  }
+
+  return `<span class="flag-frame ${className}">${GLOBE_FALLBACK_SVG}</span>`;
 }
 
 export function createLangPicker(container, { languages, value, onChange, placeholder }) {
@@ -42,7 +49,7 @@ export function createLangPicker(container, { languages, value, onChange, placeh
 
   function updateInputDisplay() {
     const lang = findLang(selectedCode);
-    flagSlot.innerHTML = lang ? renderFlag(lang) : '<span class="flag-emoji">🌐</span>';
+    flagSlot.innerHTML = lang ? renderFlag(lang) : renderFlag(null);
     if (!isOpen) {
       input.value = lang ? lang.name : '';
       input.placeholder = lang ? '' : placeholder;
@@ -63,7 +70,7 @@ export function createLangPicker(container, { languages, value, onChange, placeh
       .map(
         (l) => `
       <li class="lang-picker-option${l.code === selectedCode ? ' selected' : ''}" data-code="${l.code}" role="option">
-        ${renderFlag(l)}
+        <span class="lang-picker-option-flag">${renderFlag(l)}</span>
         <span class="lang-picker-name">${l.name}</span>
       </li>`
       )
@@ -72,8 +79,13 @@ export function createLangPicker(container, { languages, value, onChange, placeh
     list.hidden = items.length === 0 && !query;
   }
 
+  function setOpenState(open) {
+    isOpen = open;
+    root.classList.toggle('is-open', open);
+  }
+
   function open() {
-    isOpen = true;
+    setOpenState(true);
     query = '';
     input.value = '';
     input.placeholder = 'Search language…';
@@ -82,7 +94,7 @@ export function createLangPicker(container, { languages, value, onChange, placeh
   }
 
   function close() {
-    isOpen = false;
+    setOpenState(false);
     query = '';
     list.hidden = true;
     updateInputDisplay();
@@ -102,7 +114,7 @@ export function createLangPicker(container, { languages, value, onChange, placeh
 
   input.addEventListener('input', () => {
     query = input.value;
-    if (!isOpen) isOpen = true;
+    if (!isOpen) setOpenState(true);
     list.hidden = false;
     renderList();
   });

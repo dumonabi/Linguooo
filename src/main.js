@@ -1,4 +1,4 @@
-import { createLangPicker, renderFlag } from './lang-picker.js';
+import { createLangPicker } from './lang-picker.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { apiFetch, clearAuthToken, getAuthToken, setAuthToken } from './auth.js';
 import {
@@ -36,13 +36,17 @@ let picker2;
 
 const $ = (sel) => document.querySelector(sel);
 
-const conversationEl = $('#conversation');
+const currentMessageEl = $('#current-message');
+const historyZoneEl = $('#history-zone');
+const historyListEl = $('#message-history');
 const toastEl = $('#toast');
 const mainMicBtn = $('#main-mic');
 const liveTranscript = $('#live-transcript');
-const progressWrap = $('#progress-wrap');
-const progressTrack = $('#progress-track');
-const progressFill = $('#progress-fill');
+const micRingWrap = $('#mic-ring-wrap');
+const progressRing = $('#progress-ring');
+const progressRingFill = $('#progress-ring-fill');
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 54;
 
 let progressRaf = null;
 let recordingProgressRaf = null;
@@ -50,19 +54,12 @@ let progressStartedAt = 0;
 let progressEstimateMs = 4000;
 let pendingQueueBusy = false;
 let pendingRetryTimer = null;
+let micMeter = null;
+let micMeterCtx = null;
+let selectedHistoryId = null;
 
-function findLang(code) {
-  return state.languages.find((l) => l.code === code);
-}
-
-function langMeta(fromCode, toCode) {
-  const from = findLang(fromCode);
-  const to = findLang(toCode);
-  if (!from || !to) return `${fromCode} → ${toCode}`;
-  const tmp = document.createElement('span');
-  tmp.innerHTML = `${renderFlag(from)} ${from.name} → ${renderFlag(to)} ${to.name}`;
-  return tmp.innerHTML;
-}
+const COPY_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+const LISTEN_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>';
 
 function prefetchAudio(msg) {
   return loadMessageAudio(msg);
@@ -133,16 +130,49 @@ async function loadMessageAudio(msg, { retry = false } = {}) {
   }
 }
 
+let playbackContext = null;
+
+function getPlaybackContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!playbackContext) playbackContext = new Ctx();
+  return playbackContext;
+}
+
+function attachPlaybackBoost(audio) {
+  const ctx = getPlaybackContext();
+  if (!ctx) return null;
+
+  try {
+    const source = ctx.createMediaElementSource(audio);
+    const gain = ctx.createGain();
+    gain.gain.value = 1.6;
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    return { ctx, source, gain };
+  } catch {
+    return null;
+  }
+}
+
 function playAudioUrl(url) {
   return new Promise((resolve, reject) => {
     const audio = new Audio(url);
+    audio.volume = 1;
     state.currentAudio = audio;
+    const boost = attachPlaybackBoost(audio);
     let settled = false;
 
     const finish = (fn) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      try {
+        boost?.source?.disconnect();
+        boost?.gain?.disconnect();
+      } catch {
+        // ignore disconnect errors
+      }
       state.currentAudio = null;
       fn();
     };
@@ -154,7 +184,19 @@ function playAudioUrl(url) {
 
     audio.onended = () => finish(resolve);
     audio.onerror = () => finish(() => reject(new Error('Playback failed')));
-    audio.play().catch((err) => finish(() => reject(err)));
+
+    const start = async () => {
+      try {
+        if (boost?.ctx.state === 'suspended') {
+          await boost.ctx.resume();
+        }
+        await audio.play();
+      } catch (err) {
+        finish(() => reject(err));
+      }
+    };
+
+    void start();
   });
 }
 
@@ -259,8 +301,8 @@ async function loadLanguages() {
     state.languages = await res.json();
   } catch {
     state.languages = [
-      { code: 'en', name: 'English', flag: '🇺🇸', customFlag: null },
-      { code: 'es', name: 'Spanish', flag: '🇪🇸', customFlag: null },
+      { code: 'en', name: 'English', flagCode: 'us' },
+      { code: 'es', name: 'Spanish', flagCode: 'es' },
     ];
   }
 }
@@ -317,7 +359,25 @@ function saveLanguages() {
 
 function clearConversation() {
   state.messages = [];
-  conversationEl.innerHTML = '';
+  selectedHistoryId = null;
+  currentMessageEl.innerHTML = '<p class="message-empty">Your last translation will appear here</p>';
+  historyListEl.innerHTML = '';
+  historyZoneEl.hidden = true;
+}
+
+function refreshHistorySelection() {
+  historyListEl.querySelectorAll('.message-card-history').forEach((card) => {
+    card.classList.toggle('message-selected', Number(card.dataset.messageId) === selectedHistoryId);
+  });
+}
+
+function onHistoryListClick(e) {
+  const card = e.target.closest('.message-card-history');
+  if (!card || e.target.closest('.icon-btn')) return;
+
+  const id = Number(card.dataset.messageId);
+  selectedHistoryId = selectedHistoryId === id ? null : id;
+  refreshHistorySelection();
 }
 
 function onLanguagesChanged() {
@@ -535,31 +595,144 @@ function simulatedProgress(elapsedMs) {
   return Math.min(97 + (overtime / (target * 0.6)) * 2, 99);
 }
 
-function updateProgressBar(pct) {
+function updateProgressRing(pct) {
   const value = Math.round(pct);
-  progressFill.style.width = `${pct}%`;
-  progressTrack.setAttribute('aria-valuenow', String(value));
+  const offset = RING_CIRCUMFERENCE * (1 - pct / 100);
+  progressRingFill.style.strokeDashoffset = String(offset);
+  progressRing.setAttribute('aria-valuenow', String(value));
+}
+
+function getMicMeterContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!micMeterCtx || micMeterCtx.state === 'closed') {
+    micMeterCtx = new Ctx();
+  }
+  return micMeterCtx;
+}
+
+function primeMicAudioOnGesture() {
+  const ctx = getMicMeterContext();
+  if (!ctx || ctx.state !== 'suspended') return;
+  void ctx.resume();
+}
+
+async function prepareMicMeter(stream) {
+  teardownMicMeter();
+
+  const ctx = getMicMeterContext();
+  if (!ctx || !stream?.active) return;
+
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.12;
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0;
+
+  source.connect(analyser);
+  analyser.connect(silentGain);
+  silentGain.connect(ctx.destination);
+
+  micMeter = {
+    source,
+    analyser,
+    silentGain,
+    timeData: new Uint8Array(analyser.fftSize),
+    freqData: new Uint8Array(analyser.frequencyBinCount),
+    smooth: 0,
+  };
+
+  if (ctx.state !== 'running') {
+    try {
+      await ctx.resume();
+    } catch {
+      // ignore resume errors
+    }
+  }
+
+  for (let i = 0; i < 4; i++) {
+    micMeter.analyser.getByteTimeDomainData(micMeter.timeData);
+    micMeter.analyser.getByteFrequencyData(micMeter.freqData);
+  }
+}
+
+function readMicLevel() {
+  if (!micMeter) return 0;
+
+  micMeter.analyser.getByteTimeDomainData(micMeter.timeData);
+  micMeter.analyser.getByteFrequencyData(micMeter.freqData);
+
+  let sum = 0;
+  for (let i = 0; i < micMeter.timeData.length; i++) {
+    const sample = (micMeter.timeData[i] - 128) / 128;
+    sum += sample * sample;
+  }
+  const rms = Math.sqrt(sum / micMeter.timeData.length);
+
+  let peak = 0;
+  for (let i = 0; i < micMeter.freqData.length; i++) {
+    if (micMeter.freqData[i] > peak) peak = micMeter.freqData[i];
+  }
+  const freqLevel = peak / 255;
+
+  const raw = Math.min(1, Math.max(rms * 4.8, freqLevel * 1.45));
+  const ease = raw > micMeter.smooth ? 0.88 : 0.22;
+  micMeter.smooth += (raw - micMeter.smooth) * ease;
+  return micMeter.smooth;
+}
+
+function applyMicVoicePulse(level) {
+  const scale = 1 + level * 0.18;
+  const glow = level;
+  mainMicBtn.style.setProperty('--mic-voice-scale', scale.toFixed(3));
+  mainMicBtn.style.setProperty('--mic-voice-glow', glow.toFixed(3));
+  micRingWrap.style.setProperty('--mic-voice-glow', glow.toFixed(3));
+}
+
+function clearMicVoicePulse() {
+  mainMicBtn.style.removeProperty('--mic-voice-scale');
+  mainMicBtn.style.removeProperty('--mic-voice-glow');
+  micRingWrap.style.removeProperty('--mic-voice-glow');
+}
+
+function teardownMicMeter() {
+  try {
+    micMeter?.source?.disconnect();
+    micMeter?.analyser?.disconnect();
+    micMeter?.silentGain?.disconnect();
+  } catch {
+    // ignore disconnect errors
+  }
+  micMeter = null;
+  clearMicVoicePulse();
+}
+
+function cancelRecordingProgressRaf() {
+  if (recordingProgressRaf) cancelAnimationFrame(recordingProgressRaf);
+  recordingProgressRaf = null;
 }
 
 function stopRecordingProgress() {
-  if (recordingProgressRaf) cancelAnimationFrame(recordingProgressRaf);
-  recordingProgressRaf = null;
-  progressWrap.classList.remove('is-recording');
+  cancelRecordingProgressRaf();
+  micRingWrap.classList.remove('is-recording');
+  teardownMicMeter();
 }
 
-function startRecordingProgress() {
-  stopRecordingProgress();
+async function startRecordingProgress() {
+  cancelRecordingProgressRaf();
   stopProgress();
-  progressWrap.hidden = false;
-  progressWrap.classList.add('is-recording');
-  progressTrack.setAttribute('aria-label', 'Recording progress');
-  updateProgressBar(0);
+  micRingWrap.classList.add('is-recording');
+  progressRing.setAttribute('aria-label', 'Recording progress');
+  updateProgressRing(0);
 
   const tick = () => {
     if (!state.isRecording) return;
 
+    applyMicVoicePulse(readMicLevel());
+
     const elapsed = Date.now() - state.recordingStartedAt;
-    updateProgressBar(Math.min((elapsed / MAX_RECORDING_MS) * 100, 100));
+    updateProgressRing(Math.min((elapsed / MAX_RECORDING_MS) * 100, 100));
 
     if (elapsed >= MAX_RECORDING_MS) {
       stopRecordingProgress();
@@ -579,14 +752,13 @@ function startProgress(estimatedMs) {
   stopProgress();
   progressEstimateMs = estimatedMs;
   progressStartedAt = performance.now();
-  progressWrap.hidden = false;
-  progressWrap.classList.add('is-active');
-  progressTrack.setAttribute('aria-label', 'Translation progress');
-  updateProgressBar(0);
+  micRingWrap.classList.add('is-active');
+  progressRing.setAttribute('aria-label', 'Translation progress');
+  updateProgressRing(0);
 
   const tick = (now) => {
     const elapsed = now - progressStartedAt;
-    updateProgressBar(simulatedProgress(elapsed));
+    updateProgressRing(simulatedProgress(elapsed));
     progressRaf = requestAnimationFrame(tick);
   };
 
@@ -596,11 +768,10 @@ function startProgress(estimatedMs) {
 function finishProgress() {
   return new Promise((resolve) => {
     stopProgress();
-    progressWrap.classList.remove('is-active');
-    updateProgressBar(100);
+    micRingWrap.classList.remove('is-active');
+    updateProgressRing(100);
     setTimeout(() => {
-      progressWrap.hidden = true;
-      updateProgressBar(0);
+      updateProgressRing(0);
       resolve();
     }, 220);
   });
@@ -609,8 +780,8 @@ function finishProgress() {
 function stopProgress() {
   if (progressRaf) cancelAnimationFrame(progressRaf);
   progressRaf = null;
-  progressWrap.classList.remove('is-active');
-  progressWrap.classList.remove('is-recording');
+  micRingWrap.classList.remove('is-active');
+  micRingWrap.classList.remove('is-recording');
 }
 
 function buildConversationContext() {
@@ -635,7 +806,7 @@ function applyTranslationResult(data) {
   };
 
   state.messages.push(message);
-  renderMessage(message);
+  renderConversation();
   prefetchAudio(message).catch(() => {});
 }
 
@@ -886,6 +1057,7 @@ async function toggleRecording() {
   if (state.isRecording) {
     await stopRecording();
   } else {
+    primeMicAudioOnGesture();
     await startRecording();
   }
 }
@@ -893,6 +1065,7 @@ async function toggleRecording() {
 async function startRecording() {
   try {
     await ensureMicStream();
+    await prepareMicMeter(state.mediaStream);
     state.audioChunks = [];
 
     const mimeType = getMimeType();
@@ -1003,8 +1176,7 @@ function resetMicUI() {
   mainMicBtn.classList.remove('processing');
   liveTranscript.hidden = true;
   liveTranscript.textContent = '';
-  progressWrap.hidden = true;
-  updateProgressBar(0);
+  updateProgressRing(0);
   updateMicState();
 }
 
@@ -1040,27 +1212,53 @@ async function playTranslation(msg, btn) {
   }
 }
 
-function renderMessage(msg) {
-  const el = document.createElement('div');
-  el.className = 'message';
+function createMessageCard(msg, { prominent = false } = {}) {
+  const el = document.createElement('article');
+  el.className = prominent ? 'message-card message-card-current' : 'message-card message-card-history';
+  el.dataset.messageId = String(msg.id);
 
-  el.innerHTML = `
-    <div class="message-bubble">
-      <div class="message-original">${escapeHtml(msg.original)}</div>
-      <div class="message-translated">${escapeHtml(msg.translated)}</div>
-    </div>
-    <div class="message-meta">
-      <span class="message-langs">${langMeta(msg.detectedLanguage, msg.targetLanguage)}</span>
-      <div class="message-actions">
-        <button type="button" class="icon-btn listen-btn" title="Listen">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>
-        </button>
-        <button type="button" class="icon-btn copy-btn" title="Copy">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-        </button>
+  if (prominent) {
+    el.innerHTML = `
+      <div class="message-bubble">
+        <div class="message-original">${escapeHtml(msg.original)}</div>
+        <div class="message-translated">
+          <span class="message-translated-text">${escapeHtml(msg.translated)}</span>
+          <button type="button" class="icon-btn copy-btn copy-btn-inline" title="Copy" aria-label="Copy">
+            ${COPY_BTN_SVG}
+          </button>
+        </div>
       </div>
-    </div>
-  `;
+      <div class="message-meta">
+        <div class="message-actions-listen">
+          <button type="button" class="icon-btn listen-btn" title="Listen" aria-label="Listen">
+            ${LISTEN_BTN_SVG}
+          </button>
+        </div>
+      </div>
+    `;
+  } else {
+    el.innerHTML = `
+      <div class="message-bubble">
+        <div class="message-original">${escapeHtml(msg.original)}</div>
+        <div class="message-translated">
+          <span class="message-translated-text">${escapeHtml(msg.translated)}</span>
+          <div class="message-inline-actions">
+            <button type="button" class="icon-btn listen-btn listen-btn-inline" title="Listen" aria-label="Listen">
+              ${LISTEN_BTN_SVG}
+            </button>
+            <button type="button" class="icon-btn copy-btn copy-btn-inline" title="Copy" aria-label="Copy">
+              ${COPY_BTN_SVG}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    el.tabIndex = 0;
+    el.addEventListener('focus', () => {
+      selectedHistoryId = msg.id;
+      refreshHistorySelection();
+    });
+  }
 
   const listenBtn = el.querySelector('.listen-btn');
   listenBtn.addEventListener('click', () => playTranslation(msg, listenBtn));
@@ -1070,8 +1268,37 @@ function renderMessage(msg) {
     showToast('Copied!');
   });
 
-  conversationEl.appendChild(el);
-  conversationEl.scrollTop = conversationEl.scrollHeight;
+  return el;
+}
+
+function renderConversation() {
+  currentMessageEl.innerHTML = '';
+  historyListEl.innerHTML = '';
+
+  if (!state.messages.length) {
+    currentMessageEl.innerHTML = '<p class="message-empty">Your last translation will appear here</p>';
+    historyZoneEl.hidden = true;
+    return;
+  }
+
+  const latest = state.messages[state.messages.length - 1];
+  const history = state.messages.slice(0, -1);
+
+  currentMessageEl.appendChild(createMessageCard(latest, { prominent: true }));
+
+  if (history.length) {
+    const historyIds = new Set(history.map((item) => item.id));
+    if (!historyIds.has(selectedHistoryId)) selectedHistoryId = null;
+
+    history.forEach((msg) => {
+      historyListEl.appendChild(createMessageCard(msg));
+    });
+    historyZoneEl.hidden = false;
+    refreshHistorySelection();
+  } else {
+    selectedHistoryId = null;
+    historyZoneEl.hidden = true;
+  }
 }
 
 function showToast(message) {
@@ -1089,6 +1316,7 @@ function escapeHtml(str) {
 
 function bindEvents() {
   mainMicBtn.addEventListener('click', toggleRecording);
+  historyListEl.addEventListener('click', onHistoryListClick);
   window.addEventListener('lingo:unauthorized', () => {
     if (authRequired) showAuthGate();
   });
