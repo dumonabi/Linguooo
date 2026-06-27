@@ -561,7 +561,6 @@ async function init() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       syncLanguageStateFromStorage();
-      scheduleComposeFocus();
     }
   });
   void purgeStalePendingRecordings();
@@ -1047,19 +1046,23 @@ function shouldRefocusComposeInput(next) {
   return true;
 }
 
-function focusComposeInput() {
+function focusComposeInput({ moveCaretToEnd = false } = {}) {
   if (!dictationInputEl || state.isRecording || state.isProcessing || dictationInputEl.disabled) return;
   dictationInputEl.focus({ preventScroll: true });
-  const pos = dictationInputEl.value.length;
-  dictationInputEl.setSelectionRange(pos, pos);
+  if (moveCaretToEnd) {
+    const pos = dictationInputEl.value.length;
+    dictationInputEl.setSelectionRange(pos, pos);
+  }
   syncComposeCaret();
 }
 
-function scheduleComposeFocus() {
+function scheduleComposeFocus({ moveCaretToEnd = false } = {}) {
   syncComposeCaret();
-  requestAnimationFrame(focusComposeInput);
-  window.setTimeout(focusComposeInput, 80);
-  window.setTimeout(focusComposeInput, 300);
+  const run = () => focusComposeInput({ moveCaretToEnd });
+  requestAnimationFrame(run);
+  if (moveCaretToEnd) {
+    window.setTimeout(run, 80);
+  }
 }
 
 function enterComposerSession() {
@@ -1092,7 +1095,7 @@ function appendToDraft(text, { prefetch = true } = {}) {
     resizeDictationInput();
   }
   if (prefetch) startDraftTranslationPrefetch(getDraftText());
-  scheduleComposeFocus();
+  scheduleComposeFocus({ moveCaretToEnd: true });
 }
 
 function clearDraftText() {
@@ -1122,19 +1125,23 @@ function bindDictation() {
   dictationInputEl.addEventListener('focus', syncComposeCaret);
   dictationInputEl.addEventListener('blur', (e) => {
     if (shouldRefocusComposeInput(e.relatedTarget)) {
-      requestAnimationFrame(focusComposeInput);
+      requestAnimationFrame(() => focusComposeInput());
       return;
     }
     requestAnimationFrame(syncComposeCaret);
   });
   dictationInputEl.addEventListener('keyup', syncComposeCaret);
   dictationInputEl.addEventListener('click', syncComposeCaret);
+  dictationInputEl.addEventListener('touchend', () => {
+    requestAnimationFrame(syncComposeCaret);
+  }, { passive: true });
   dictationInputEl.addEventListener('scroll', syncComposeCaret, { passive: true });
   document.addEventListener('selectionchange', () => {
     if (document.activeElement === dictationInputEl) syncComposeCaret();
   });
   composeBoxEl?.addEventListener('click', (e) => {
     if (e.target.closest('button')) return;
+    if (e.target === dictationInputEl) return;
     focusComposeInput();
   });
   dictationTranslateBtn.addEventListener('click', () => {

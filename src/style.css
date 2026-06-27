@@ -276,6 +276,16 @@ body {
   outline: none;
 }
 
+@media (hover: none) and (pointer: coarse) {
+  .compose-input {
+    caret-color: var(--accent-light);
+  }
+
+  .compose-caret {
+    display: none;
+  }
+}
+
 .compose-box.is-recording .compose-input {
   color: var(--text-muted);
 }
