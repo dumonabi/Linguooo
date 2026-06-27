@@ -1,29 +1,11 @@
-import crypto from 'crypto';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import {
+  findUserByPassword,
+  getGuestUser,
+  isAuthRequired,
+} from './users.js';
 
-export function getAppPassword() {
-  const password = process.env.APP_PASSWORD?.trim();
-  return password || null;
-}
-
-export function isAuthRequired() {
-  return Boolean(getAppPassword());
-}
-
-function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-export function verifyPassword(attempt) {
-  const password = getAppPassword();
-  if (!password) return true;
-  if (typeof attempt !== 'string' || !attempt) return false;
-  return timingSafeEqual(attempt, password);
-}
+export { isAuthRequired } from './users.js';
 
 export function getClientIp(req) {
   const forwarded = req.headers['x-forwarded-for'];
@@ -65,14 +47,36 @@ export const authVerifyRateLimit = createLimiter({
   message: 'Too many login attempts — try again later',
 });
 
-export function requireAppAuth(req, res, next) {
-  if (!isAuthRequired()) return next();
+export const voiceSampleRateLimit = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 40,
+  message: 'Too many voice sample uploads — try again later',
+});
+
+export const dubRateLimit = createLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: 'Too many dubbing requests this hour — try again later',
+});
+
+export function resolveRequestUser(req) {
+  if (!isAuthRequired()) return getGuestUser();
 
   const header = req.headers.authorization;
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return null;
 
-  if (token && verifyPassword(token)) return next();
-  res.status(401).json({ error: 'Unauthorized' });
+  return findUserByPassword(token);
+}
+
+export function requireAppAuth(req, res, next) {
+  const user = resolveRequestUser(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  req.user = user;
+  return next();
 }
 
 function isLocalOrigin(origin) {

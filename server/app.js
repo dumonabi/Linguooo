@@ -13,8 +13,37 @@ import {
   isAuthRequired,
   requireAppAuth,
   speakRateLimit,
-  verifyPassword,
+  voiceSampleRateLimit,
+  dubRateLimit,
 } from './security.js';
+import {
+  findUserByPassword,
+  getGuestUser,
+  publicUserProfile,
+} from './users.js';
+import {
+  addVoiceSample,
+  deleteVoiceSample,
+  getVoiceProfile,
+  listVoiceSampleBuffers,
+  MAX_VOICE_SAMPLES,
+  resolveVoiceId,
+  saveVoiceClone,
+} from './voice-store.js';
+import {
+  createVoiceClone,
+  generateClonedSpeech,
+  isElevenLabsConfigured,
+  startDubbingJob,
+  getDubbingStatus,
+  fetchDubbingAudio,
+} from './elevenlabs.js';
+import {
+  dubbingLanguageError,
+  isDubbingLanguageSupported,
+  listDubbingLanguageCodes,
+  resolveDubbingLanguage,
+} from './dubbing-languages.js';
 
 dotenv.config();
 
@@ -100,6 +129,9 @@ function formatApiError(err) {
   const status = err?.status;
   const code = err?.code || err?.error?.code;
 
+  if (msg.includes('Too many concurrent requests')) {
+    return 'Natural delivery is busy — wait a minute for other jobs to finish, then try again';
+  }
   if (status === 429 || code === 'insufficient_quota' || msg.includes('quota') || msg.includes('billing')) {
     return 'OpenAI quota exceeded — add credits at platform.openai.com/account/billing';
   }
@@ -362,8 +394,8 @@ async function transcribeAudio(openai, file, { lang1, lang2 } = {}) {
 const ttsCache = new Map();
 const TTS_CACHE_MAX = 120;
 
-function ttsCacheKey(text, lang) {
-  return `${lang || ''}|${prepareTextForSpeech(text, lang)}`;
+function ttsCacheKey(text, lang, voiceId = null) {
+  return `${voiceId || 'default'}|${lang || ''}|${prepareTextForSpeech(text, lang)}`;
 }
 
 function readTtsCache(key) {
@@ -383,27 +415,33 @@ function writeTtsCache(key, buffer) {
   }
 }
 
-async function generateSpeech(openai, text, lang) {
+async function generateSpeech(openai, text, lang, voiceId = null) {
   const input = prepareTextForSpeech(text, lang);
   if (!input) {
     throw new Error('No speakable text');
   }
 
-  const cacheKey = ttsCacheKey(input, lang);
+  const cacheKey = ttsCacheKey(input, lang, voiceId);
   const cached = readTtsCache(cacheKey);
   if (cached) return cached;
 
-  const speech = await withRetry(() =>
-    openai.audio.speech.create({
-      model: 'tts-1',
-      voice: 'nova',
-      input,
-      speed: 1.08,
-      response_format: 'mp3',
-    }),
-    2
-  );
-  const buffer = Buffer.from(await speech.arrayBuffer());
+  let buffer;
+  if (voiceId && isElevenLabsConfigured()) {
+    buffer = await generateClonedSpeech(input, voiceId);
+  } else {
+    const speech = await withRetry(() =>
+      openai.audio.speech.create({
+        model: 'tts-1',
+        voice: 'nova',
+        input,
+        speed: 1.08,
+        response_format: 'mp3',
+      }),
+      2
+    );
+    buffer = Buffer.from(await speech.arrayBuffer());
+  }
+
   writeTtsCache(cacheKey, buffer);
   return buffer;
 }
@@ -415,6 +453,11 @@ function prepareTextForSpeech(text, lang) {
     .replace(/[\u200B-\u200D\uFEFF]/g, '')
     .replace(/[…]/g, '...')
     .replace(/\s+/g, ' ');
+}
+
+function estimateDubSeconds(recordingMs) {
+  const audioSec = Math.max(2, (Number(recordingMs) || 0) / 1000);
+  return Math.round(Math.min(90, Math.max(28, audioSec * 2.5 + 22)));
 }
 
 export function createApp() {
@@ -429,20 +472,126 @@ export function createApp() {
     res.json({
       ok: true,
       authRequired: isAuthRequired(),
+      dubbingConfigured: isElevenLabsConfigured(),
+      dubbingLanguages: listDubbingLanguageCodes(),
     });
   });
 
-  app.post('/api/auth/verify', authVerifyRateLimit, (req, res) => {
+  app.post('/api/auth/verify', authVerifyRateLimit, async (req, res) => {
     if (!isAuthRequired()) {
-      return res.json({ ok: true });
+      const guest = getGuestUser();
+      const voiceProfile = await getVoiceProfile(guest.id);
+      return res.json({ ok: true, user: publicUserProfile(guest, voiceProfile) });
     }
 
     const { password } = req.body || {};
-    if (verifyPassword(password)) {
-      return res.json({ ok: true });
+    const user = findUserByPassword(password);
+    if (user) {
+      const voiceProfile = await getVoiceProfile(user.id);
+      return res.json({ ok: true, user: publicUserProfile(user, voiceProfile) });
     }
 
     res.status(401).json({ error: 'Wrong access code' });
+  });
+
+  app.get('/api/me', requireAppAuth, async (req, res) => {
+    const voiceProfile = await getVoiceProfile(req.user.id);
+    res.json({
+      user: publicUserProfile(req.user, voiceProfile),
+      voiceProfile: {
+        status: voiceProfile.status,
+        sampleCount: voiceProfile.samples.length,
+        voiceReady: Boolean(resolveVoiceId(req.user, voiceProfile)),
+        elevenlabsConfigured: isElevenLabsConfigured(),
+        minSamples: MAX_VOICE_SAMPLES,
+        maxSamples: MAX_VOICE_SAMPLES,
+        canRecordMore: voiceProfile.samples.length < MAX_VOICE_SAMPLES,
+      },
+    });
+  });
+
+  app.get('/api/voice/profile', requireAppAuth, async (req, res) => {
+    const voiceProfile = await getVoiceProfile(req.user.id);
+    res.json({
+      status: voiceProfile.status,
+      sampleCount: voiceProfile.samples.length,
+      samples: voiceProfile.samples.map(({ id, createdAt }) => ({ id, createdAt })),
+      voiceReady: Boolean(resolveVoiceId(req.user, voiceProfile)),
+      elevenlabsConfigured: isElevenLabsConfigured(),
+      minSamples: MAX_VOICE_SAMPLES,
+      maxSamples: MAX_VOICE_SAMPLES,
+      canRecordMore: voiceProfile.samples.length < MAX_VOICE_SAMPLES,
+    });
+  });
+
+  app.post('/api/voice/samples', requireAppAuth, voiceSampleRateLimit, upload.single('audio'), async (req, res) => {
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'No audio received' });
+    }
+
+    try {
+      const mimeType = req.file.mimetype || 'audio/webm';
+      const profile = await addVoiceSample(req.user.id, req.file.buffer, mimeType);
+      res.json({
+        ok: true,
+        sampleCount: profile.samples.length,
+        status: profile.status,
+        canRecordMore: profile.samples.length < MAX_VOICE_SAMPLES,
+        readyForClone: profile.samples.length >= MAX_VOICE_SAMPLES,
+      });
+    } catch (err) {
+      console.error('Voice sample upload error:', err);
+      const status = err.code === 'SAMPLE_LIMIT' ? 400 : 500;
+      res.status(status).json({ error: err.message || 'Could not save voice sample' });
+    }
+  });
+
+  app.delete('/api/voice/samples/:sampleId', requireAppAuth, async (req, res) => {
+    try {
+      const profile = await deleteVoiceSample(req.user.id, req.params.sampleId);
+      if (!profile) {
+        return res.status(404).json({ error: 'Sample not found' });
+      }
+      res.json({
+        ok: true,
+        sampleCount: profile.samples.length,
+        status: profile.status,
+        voiceReady: Boolean(resolveVoiceId(req.user, profile)),
+      });
+    } catch (err) {
+      console.error('Voice sample delete error:', err);
+      res.status(500).json({ error: err.message || 'Could not delete voice sample' });
+    }
+  });
+
+  app.post('/api/voice/create', requireAppAuth, async (req, res) => {
+    if (!isElevenLabsConfigured()) {
+      return res.status(503).json({ error: 'Voice cloning is not configured on the server' });
+    }
+
+    try {
+      const { profile, buffers } = await listVoiceSampleBuffers(req.user.id);
+      if (buffers.length < MAX_VOICE_SAMPLES) {
+        return res.status(400).json({ error: `Record at least ${MAX_VOICE_SAMPLES} voice samples first` });
+      }
+
+      const voiceId = await createVoiceClone({
+        name: `Lingu ${req.user.name}`,
+        description: `Personal voice profile for ${req.user.name}`,
+        samples: buffers,
+      });
+
+      const saved = await saveVoiceClone(req.user.id, voiceId);
+      res.json({
+        ok: true,
+        voiceReady: true,
+        status: saved.status,
+        sampleCount: saved.samples.length,
+      });
+    } catch (err) {
+      console.error('Voice clone error:', err);
+      res.status(500).json({ error: err.message || 'Could not create voice profile' });
+    }
   });
 
   app.get('/api/languages', requireAppAuth, (_req, res) => {
@@ -544,6 +693,96 @@ export function createApp() {
     }
   });
 
+  app.post('/api/dub/start', requireAppAuth, dubRateLimit, upload.single('audio'), async (req, res) => {
+    if (!isElevenLabsConfigured()) {
+      return res.status(503).json({ error: 'Dubbing is not configured on this server' });
+    }
+
+    const targetLang = String(req.body.targetLang || '').toLowerCase().trim();
+    const sourceLang = String(req.body.sourceLang || 'auto').toLowerCase().trim();
+    const recordingMs = Number(req.body.recordingMs || 0);
+
+    if (!targetLang) {
+      return res.status(400).json({ error: 'Target language is required' });
+    }
+    if (!isDubbingLanguageSupported(targetLang)) {
+      return res.status(400).json({ error: dubbingLanguageError(targetLang) });
+    }
+    const dubTargetLang = resolveDubbingLanguage(targetLang);
+    const dubSourceLang = sourceLang === 'auto' ? 'auto' : (resolveDubbingLanguage(sourceLang) || sourceLang);
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'No audio received' });
+    }
+
+    try {
+      const dubbingId = await startDubbingJob({
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype || 'audio/webm',
+        sourceLang: dubSourceLang,
+        targetLang: dubTargetLang,
+      });
+
+      res.json({
+        dubbingId,
+        targetLang: dubTargetLang,
+        estimatedSeconds: estimateDubSeconds(recordingMs),
+      });
+    } catch (err) {
+      console.error('Dub start error:', err);
+      const message = formatApiError(err);
+      const status = message.includes('Natural delivery is busy') ? 429 : 500;
+      res.status(status).json({ error: message });
+    }
+  });
+
+  app.get('/api/dub/:id/status', requireAppAuth, dubRateLimit, async (req, res) => {
+    if (!isElevenLabsConfigured()) {
+      return res.status(503).json({ error: 'Dubbing is not configured on this server' });
+    }
+
+    const dubbingId = String(req.params.id || '').trim();
+    if (!dubbingId) {
+      return res.status(400).json({ error: 'Dubbing id is required' });
+    }
+
+    try {
+      const data = await getDubbingStatus(dubbingId);
+      res.json({
+        status: data?.status || 'unknown',
+        error: data?.error || null,
+      });
+    } catch (err) {
+      console.error('Dub status error:', err);
+      res.status(500).json({ error: formatApiError(err) });
+    }
+  });
+
+  app.get('/api/dub/:id/audio', requireAppAuth, dubRateLimit, async (req, res) => {
+    if (!isElevenLabsConfigured()) {
+      return res.status(503).json({ error: 'Dubbing is not configured on this server' });
+    }
+
+    const dubbingId = String(req.params.id || '').trim();
+    const targetLang = String(req.query.lang || '').toLowerCase().trim();
+
+    if (!dubbingId || !targetLang) {
+      return res.status(400).json({ error: 'Dubbing id and target language are required' });
+    }
+    if (!isDubbingLanguageSupported(targetLang)) {
+      return res.status(400).json({ error: dubbingLanguageError(targetLang) });
+    }
+
+    try {
+      const buffer = await fetchDubbingAudio(dubbingId, resolveDubbingLanguage(targetLang));
+      res.set('Content-Type', 'audio/mpeg');
+      res.set('Cache-Control', 'private, max-age=3600');
+      res.send(buffer);
+    } catch (err) {
+      console.error('Dub audio error:', err);
+      res.status(500).json({ error: formatApiError(err) });
+    }
+  });
+
   app.post('/api/speak', requireAppAuth, speakRateLimit, async (req, res) => {
     const openai = requireOpenAI(res);
     if (!openai) return;
@@ -554,9 +793,15 @@ export function createApp() {
     }
 
     const langCode = lang ? String(lang).toLowerCase().trim() : null;
+    const voiceMode = req.body.voiceMode === 'clone' ? 'clone' : 'default';
 
     try {
-      const buffer = await generateSpeech(openai, text, langCode);
+      const voiceProfile = await getVoiceProfile(req.user.id);
+      const voiceId = voiceMode === 'clone' ? resolveVoiceId(req.user, voiceProfile) : null;
+      if (voiceMode === 'clone' && !voiceId) {
+        return res.status(400).json({ error: 'Personal voice not ready — set up your voice profile first' });
+      }
+      const buffer = await generateSpeech(openai, text, langCode, voiceId);
       res.set('Content-Type', 'audio/mpeg');
       res.set('Cache-Control', 'private, max-age=3600');
       res.send(buffer);

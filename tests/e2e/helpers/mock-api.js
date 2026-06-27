@@ -27,7 +27,12 @@ export async function setupApiMocks(page, options = {}) {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, authRequired }),
+        body: JSON.stringify({
+          ok: true,
+          authRequired,
+          dubbingConfigured: false,
+          dubbingLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'vi'],
+        }),
       });
     }
 
@@ -43,7 +48,60 @@ export async function setupApiMocks(page, options = {}) {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, token: 'test-token' }),
+        body: JSON.stringify({
+          ok: true,
+          user: {
+            id: 'test-user',
+            name: 'Test User',
+            nativeLanguage: 'en',
+            voiceReady: false,
+            voiceSampleCount: 0,
+            voiceStatus: 'none',
+          },
+        }),
+      });
+    }
+
+    if (path === '/api/me') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          user: {
+            id: 'test-user',
+            name: 'Test User',
+            nativeLanguage: 'en',
+            voiceReady: false,
+            voiceSampleCount: 0,
+            voiceStatus: 'none',
+          },
+          voiceProfile: {
+            status: 'none',
+            sampleCount: 0,
+            voiceReady: false,
+            elevenlabsConfigured: false,
+            minSamples: 6,
+            maxSamples: 6,
+            canRecordMore: true,
+          },
+        }),
+      });
+    }
+
+    if (path === '/api/voice/profile') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'none',
+          sampleCount: 0,
+          samples: [],
+          voiceReady: false,
+          elevenlabsConfigured: false,
+          minSamples: 6,
+          maxSamples: 6,
+          canRecordMore: true,
+        }),
       });
     }
 

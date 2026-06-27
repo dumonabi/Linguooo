@@ -1,6 +1,7 @@
 import { createLangPicker } from './lang-picker.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
-import { apiFetch, clearAuthToken, getAuthToken, setAuthToken } from './auth.js';
+import { apiFetch, clearAuthToken, fetchCurrentUser, getAuthToken, setAuthToken, setStoredUser } from './auth.js';
+import { initUserProfile, refreshUserSession } from './user-profile.js';
 import {
   clearAllPendingRecordings,
   isRetryableSendError,
@@ -28,6 +29,7 @@ const state = {
   lang1: DEFAULT_LANG1,
   lang2: DEFAULT_LANG2,
   messages: [],
+  user: null,
   isProcessing: false,
   isRecording: false,
   stoppingRecording: false,
@@ -49,6 +51,12 @@ let pendingQueuePausedUntil = 0;
 let activeConverseController = null;
 let draftTranslationPrefetch = null;
 let draftPrefetchSeq = 0;
+let pendingSourceRecording = null;
+let dubbingLanguages = new Set([
+  'ar', 'cs', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'hi', 'hu', 'id', 'it',
+  'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sv', 'tr', 'uk', 'vi',
+  'zh', 'tl', 'ta',
+]);
 
 let picker1;
 let picker2;
@@ -125,13 +133,16 @@ let micWaveShiftBusy = false;
 const COPY_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
 const SHARE_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>';
 const LISTEN_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/></svg>';
+const SHARE_AUDIO_BTN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10v4h2l3.5 3.5V6.5L6 10H4z" fill="currentColor" stroke="none"/><path d="M13 12h7"/><path d="M17 8l4 4-4 4"/></svg>';
+const WAND_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.5 5.6L5 7l1.4-2.5L5 2l2.5 1.4L10 2 8.6 4.5 10 7 7.5 5.6zm12 9.8l-1.4 2.5 2.5-1.4 2.5 1.4-1.4-2.5 1.4-2.5-2.5 1.4-2.5-1.4 1.4 2.5zM6 19l11.7-11.7 2.3 2.3L8.3 21 6 19z"/></svg>';
 
 function prefetchAudio(msg) {
   return loadMessageAudio(msg, { prefetch: true });
 }
 
 function audioCacheKey(msg) {
-  return `${msg.translated}|${msg.targetLanguage}`;
+  const userId = state.user?.id || 'default';
+  return `${userId}|clone|${msg.translated}|${msg.targetLanguage}`;
 }
 
 function getMessageCardEl(message) {
@@ -143,6 +154,7 @@ function revealListenButton(message) {
   if (!listenWrap) return;
   listenWrap.hidden = false;
   listenWrap.querySelector('.listen-btn')?.classList.add('is-ready');
+  listenWrap.querySelector('.share-audio-btn')?.classList.add('is-ready');
 }
 
 function startBackgroundAudio(message) {
@@ -155,6 +167,13 @@ function startBackgroundAudio(message) {
     if (message.id !== state.latestMessageId) return;
     revealListenButton(message);
   });
+}
+
+function resetVoiceBtn(btn) {
+  btn.classList.remove('playing', 'is-loading');
+  btn.disabled = false;
+  delete btn.dataset.busy;
+  releaseActionButtonFocus(btn);
 }
 
 function cancelMessageAudio(msg) {
@@ -171,6 +190,93 @@ function invalidateMessageAudio(msg) {
     msg.audioUrl = null;
   }
   msg._audioPromise = null;
+}
+
+function resolveDubbingLanguage(code) {
+  const normalized = String(code || '').toLowerCase().trim();
+  if (!normalized) return null;
+  const mapped = normalized === 'nn' ? 'no' : normalized;
+  if (!dubbingLanguages.has(mapped)) return null;
+  return mapped;
+}
+
+function dubbingLanguageName(code) {
+  return state.languages.find((lang) => lang.code === code)?.name || code;
+}
+
+function inferMessageTargetLanguage(msg) {
+  if (msg.targetLanguage) return msg.targetLanguage;
+  const { lang1, lang2 } = getLanguagePair();
+  const detected = msg.detectedLanguage;
+  if (detected === lang1) return lang2;
+  if (detected === lang2) return lang1;
+  return null;
+}
+
+function isNaturalDeliveryAvailable(msg) {
+  const target = inferMessageTargetLanguage(msg);
+  if (!target) return false;
+  return resolveDubbingLanguage(target) != null;
+}
+
+function dubbingBusyError(message) {
+  if (!message?.includes('Too many concurrent requests')) return null;
+  return 'Natural delivery is busy — wait a minute for other jobs to finish, then try again';
+}
+
+function dubbingLanguageError(code) {
+  const name = dubbingLanguageName(code);
+  return `Natural delivery to ${name} isn't available yet. ElevenLabs dubbing doesn't support this language — try translating into English, Spanish, Chinese, Japanese, or Vietnamese instead.`;
+}
+
+function estimateDubSeconds(recordingMs) {
+  const audioSec = Math.max(2, (Number(recordingMs) || 0) / 1000);
+  return Math.round(Math.min(90, Math.max(28, audioSec * 2.5 + 22)));
+}
+
+function invalidateMessageDub(msg) {
+  if (msg.dubAudioUrl) {
+    URL.revokeObjectURL(msg.dubAudioUrl);
+    msg.dubAudioUrl = null;
+  }
+}
+
+function stopDubCountdown(msg) {
+  if (msg._dubTickTimer) {
+    clearInterval(msg._dubTickTimer);
+    msg._dubTickTimer = null;
+  }
+}
+
+function dubStatusText(msg) {
+  if (msg.dubStatus !== 'loading') return '';
+  const elapsed = Math.floor((Date.now() - (msg.dubStartedAt || Date.now())) / 1000);
+  const remaining = Math.max(0, (msg.dubEstimateSec || 30) - elapsed);
+  if (remaining > 0) {
+    return `Creating natural delivery… about ${remaining}s remaining`;
+  }
+  return 'Still working — almost there…';
+}
+
+function startDubCountdown(msg) {
+  stopDubCountdown(msg);
+  msg._dubTickTimer = window.setInterval(() => {
+    if (msg.dubStatus !== 'loading' || msg.id !== state.latestMessageId) {
+      stopDubCountdown(msg);
+      return;
+    }
+    const el = getMessageCardEl(msg)?.querySelector('.message-dub-status');
+    if (el) el.textContent = dubStatusText(msg);
+  }, 1000);
+}
+
+function cancelMessageDub(msg) {
+  if (msg._dubPollAbort) {
+    msg._dubPollAbort.abort();
+    msg._dubPollAbort = null;
+  }
+  stopDubCountdown(msg);
+  invalidateMessageDub(msg);
 }
 
 function stopPlayback() {
@@ -195,7 +301,10 @@ function prepareForNewTranslation(message) {
   stopPlayback();
   state.latestMessageId = message.id;
   for (const m of state.messages) {
-    if (m.id !== message.id) cancelMessageAudio(m);
+    if (m.id !== message.id) {
+      cancelMessageAudio(m);
+      cancelMessageDub(m);
+    }
   }
 }
 
@@ -315,7 +424,7 @@ function kickoffPrefetchAudio(prefetchRef, doneData) {
 async function loadMessageAudio(msg, { prefetch = false } = {}) {
   const key = audioCacheKey(msg);
   if (msg._audioKey && msg._audioKey !== key) {
-    cancelMessageAudio(msg);
+    invalidateMessageAudio(msg);
   }
   msg._audioKey = key;
 
@@ -332,6 +441,7 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
 
   const attempts = prefetch ? 2 : 2;
   const messageId = msg.id;
+  const errMsg = 'Audio not ready — tap Listen again';
 
   msg._audioPromise = enqueueSpeak(async () => {
     if (prefetch && state.latestMessageId && messageId !== state.latestMessageId) return;
@@ -352,28 +462,32 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
         const res = await apiFetch('/api/speak', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: msg.translated, lang: msg.targetLanguage }),
+          body: JSON.stringify({
+            text: msg.translated,
+            lang: msg.targetLanguage,
+            voiceMode: 'clone',
+          }),
           signal: controller.signal,
         });
 
-        let errMsg = 'Audio not ready — tap Listen again';
+        let message = errMsg;
         if (!res.ok) {
           try {
             const data = await res.json();
-            errMsg = data.error || errMsg;
+            message = data.error || errMsg;
           } catch {
-            if (res.status === 429) errMsg = 'Too many audio requests — wait a moment';
+            if (res.status === 429) message = 'Too many audio requests — wait a moment';
           }
-          throw new Error(errMsg);
+          throw new Error(message);
         }
 
         const contentType = res.headers.get('content-type') || '';
         if (!contentType.includes('audio')) {
-          throw new Error('Audio not ready — tap Listen again');
+          throw new Error(errMsg);
         }
 
         const blob = await res.blob();
-        if (!blob.size) throw new Error('Audio not ready — tap Listen again');
+        if (!blob.size) throw new Error(errMsg);
         if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
         msg.audioUrl = URL.createObjectURL(blob);
@@ -390,7 +504,7 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
     }
 
     msg._speakAbort = null;
-    throw lastError || new Error('Audio not ready — tap Listen again');
+    throw lastError || new Error(errMsg);
   });
 
   try {
@@ -493,10 +607,7 @@ function playAudioUrl(url) {
 }
 
 function resetListenBtn(btn) {
-  btn.classList.remove('playing');
-  btn.disabled = false;
-  delete btn.dataset.busy;
-  releaseActionButtonFocus(btn);
+  resetVoiceBtn(btn);
 }
 
 function releaseActionButtonFocus(btn) {
@@ -558,6 +669,13 @@ async function init() {
   resizeDictationInput();
   updateComposeState();
   scheduleComposeFocus();
+  initUserProfile($('#user-profile-slot'), {
+    showToast,
+    onChange: (user) => {
+      state.user = user;
+    },
+  });
+  void refreshUserSession();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       syncLanguageStateFromStorage();
@@ -572,8 +690,11 @@ async function ensureAuthenticated() {
   if (!authRequired) return true;
 
   if (getAuthToken()) {
-    const res = await apiFetch('/api/languages');
-    if (res.ok) return true;
+    const data = await fetchCurrentUser();
+    if (data?.user) {
+      state.user = data.user;
+      return true;
+    }
     clearAuthToken();
   }
 
@@ -622,7 +743,12 @@ function showAuthGate() {
         }
 
         setAuthToken(password);
+        if (data.user) {
+          setStoredUser(data.user);
+          state.user = data.user;
+        }
         gate.hidden = true;
+        void refreshUserSession();
         window.removeEventListener('lingo:unauthorized', onUnauthorized);
         resolve(true);
       } catch {
@@ -957,6 +1083,9 @@ async function checkHealth() {
     const res = await fetch('/api/health');
     const data = await res.json();
     authRequired = Boolean(data.authRequired);
+    if (Array.isArray(data.dubbingLanguages) && data.dubbingLanguages.length) {
+      dubbingLanguages = new Set(data.dubbingLanguages);
+    }
     return true;
   } catch {
     showToast('Run: npm run dev');
@@ -1042,7 +1171,7 @@ function syncComposeCaret() {
 function shouldRefocusComposeInput(next) {
   if (!next) return true;
   if (next === dictationInputEl) return false;
-  if (next.closest?.('button, .lang-picker, #auth-gate, select, input, textarea, a')) return false;
+  if (next.closest?.('button, .lang-picker, #auth-gate, .user-profile, select, input, textarea, a')) return false;
   return true;
 }
 
@@ -1098,8 +1227,13 @@ function appendToDraft(text, { prefetch = true } = {}) {
   scheduleComposeFocus({ moveCaretToEnd: true });
 }
 
+function clearPendingSourceRecording() {
+  pendingSourceRecording = null;
+}
+
 function clearDraftText() {
   cancelDraftTranslationPrefetch();
+  clearPendingSourceRecording();
   emptyDraftFields();
 }
 
@@ -1745,13 +1879,15 @@ function buildConversationContext() {
     }));
 }
 
-async function applyTranslationResult(data, { requestId, prefetchEntry } = {}) {
+async function applyTranslationResult(data, { requestId, prefetchEntry, sourceRecording } = {}) {
   if (requestId !== undefined && requestId !== latestTranslationRequest) return;
 
   stopLoadingDots();
 
   const prev = state.messages[0];
   const streamId = requestId !== undefined ? `stream-${requestId}` : null;
+
+  const attachedRecording = sourceRecording || pendingSourceRecording;
 
   const message = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1760,12 +1896,31 @@ async function applyTranslationResult(data, { requestId, prefetchEntry } = {}) {
     detectedLanguage: data.detectedLanguage,
     targetLanguage: data.targetLanguage,
     audioUrl: null,
+    sourceRecording: attachedRecording
+      ? {
+          blob: attachedRecording.blob,
+          mimeType: attachedRecording.mimeType,
+          recordingMs: attachedRecording.recordingMs,
+        }
+      : null,
+    dubStatus: null,
+    dubEstimateSec: null,
+    dubStartedAt: null,
+    dubAudioUrl: null,
+    dubId: null,
+    dubTargetLang: null,
+    dubError: null,
   };
+
+  if (attachedRecording && !sourceRecording) {
+    clearPendingSourceRecording();
+  }
 
   if (prev?._streaming && streamId && prev.id === streamId) {
     if (prev.audioUrl) message.audioUrl = prev.audioUrl;
     if (prev._audioPromise) message._audioPromise = prev._audioPromise;
     if (prev._speakAbort) message._speakAbort = prev._speakAbort;
+    if (prev._audioKey) message._audioKey = prev._audioKey;
   }
 
   const hidden = prefetchEntry?.hiddenMessage;
@@ -1773,6 +1928,13 @@ async function applyTranslationResult(data, { requestId, prefetchEntry } = {}) {
     if (hidden.audioUrl) message.audioUrl = hidden.audioUrl;
     if (hidden._audioPromise) message._audioPromise = hidden._audioPromise;
     if (hidden._speakAbort) message._speakAbort = hidden._speakAbort;
+  }
+
+  for (const m of state.messages) {
+    if (m.id !== message.id) {
+      cancelMessageAudio(m);
+      cancelMessageDub(m);
+    }
   }
 
   state.messages = [message];
@@ -2280,7 +2442,14 @@ async function processPendingQueue() {
     if (requestId !== latestTranslationRequest) return;
     if (item.createdAt <= lastTranslationAppliedAt) return;
 
-    await applyTranslationResult(data, { requestId });
+    await applyTranslationResult(data, {
+      requestId,
+      sourceRecording: {
+        blob: item.blob,
+        mimeType: item.mimeType,
+        recordingMs: item.recordingMs,
+      },
+    });
     if (!streamProgressFinished) await finishProgress();
   } catch (err) {
     if (err?.name === 'AbortError') return;
@@ -2341,7 +2510,10 @@ async function sendRecordingForTranslation({ blob, mimeType, recordingMs }) {
       requestId,
     });
     if (requestId !== latestTranslationRequest) return;
-    await applyTranslationResult(data, { requestId });
+    await applyTranslationResult(data, {
+      requestId,
+      sourceRecording: { blob, mimeType, recordingMs },
+    });
   } catch (err) {
     if (err?.name === 'AbortError') return;
     throw err;
@@ -2363,6 +2535,7 @@ async function beginRecording() {
   primeMicAudioOnGesture();
   abortActiveConverse();
   cancelDraftTranslationPrefetch();
+  clearPendingSourceRecording();
   latestTranslationRequest++;
   stopPlayback();
   clearMicVoicePulse();
@@ -2467,6 +2640,8 @@ async function acceptRecording({ autoLimit = false } = {}) {
       return;
     }
 
+    pendingSourceRecording = { blob, mimeType, recordingMs };
+
     composeBoxEl.classList.add('is-processing');
     updateComposeState();
     startMicTranscribeProgress(recordingMs, blob.size);
@@ -2563,14 +2738,14 @@ function resetMicUI() {
 }
 
 async function playTranslation(msg, btn) {
-  if (btn.dataset.busy === '1') return;
+  if (btn?.dataset.busy === '1') return;
 
-  releaseActionButtonFocus(btn.closest('.message-card')?.querySelector('.copy-btn, .share-btn'));
-  btn.dataset.busy = '1';
+  releaseActionButtonFocus(btn?.closest('.message-card')?.querySelector('.copy-btn, .share-btn'));
+  if (btn) btn.dataset.busy = '1';
   stopPlayback();
 
-  btn.classList.add('playing');
-  btn.disabled = true;
+  btn?.classList.add('playing');
+  if (btn) btn.disabled = true;
 
   try {
     if (!msg.audioUrl) {
@@ -2584,7 +2759,297 @@ async function playTranslation(msg, btn) {
       showToast(err.message);
     }
   } finally {
-    resetListenBtn(btn);
+    if (btn) resetListenBtn(btn);
+  }
+}
+
+async function blobFromAudioUrl(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Could not read audio');
+  return res.blob();
+}
+
+async function shareClonedAudio(msg, btn) {
+  if (btn?.dataset.busy === '1') return;
+  if (btn) {
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+  }
+
+  try {
+    if (!msg.audioUrl) {
+      await loadMessageAudio(msg);
+    }
+    if (!msg.audioUrl) throw new Error('Audio not ready — try again');
+
+    const blob = await blobFromAudioUrl(msg.audioUrl);
+    const filename = `lingu-translation-${Date.now()}.mp3`;
+    const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
+
+    if (typeof navigator.share !== 'function') {
+      showToast('Sharing audio is not supported on this device');
+      return;
+    }
+    if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+      showToast('Sharing audio is not supported on this device');
+      return;
+    }
+
+    await navigator.share({ files: [file], title: 'Translation audio' });
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      showToast(err.message || 'Could not share audio');
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      delete btn.dataset.busy;
+      releaseActionButtonFocus(btn);
+    }
+  }
+}
+
+function renderDubPanel(msg) {
+  if (msg.dubStatus === 'loading') {
+    return `
+      <div class="message-dub-panel is-loading" aria-busy="true" aria-live="polite">
+        <p class="message-dub-label">Natural delivery</p>
+        <p class="message-dub-status">${escapeHtml(dubStatusText(msg))}</p>
+      </div>
+    `;
+  }
+
+  if (msg.dubStatus === 'ready' && msg.dubAudioUrl) {
+    return `
+      <div class="message-dub-panel is-ready">
+        <p class="message-dub-label">Natural delivery</p>
+        <div class="message-dub-actions">
+          <button type="button" class="icon-btn dub-listen-btn" title="Listen" aria-label="Listen to natural delivery">
+            ${LISTEN_BTN_SVG}
+          </button>
+          <button type="button" class="icon-btn dub-share-btn" title="Share audio" aria-label="Share natural delivery">
+            ${SHARE_AUDIO_BTN_SVG}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  if (msg.dubStatus === 'error') {
+    return `
+      <div class="message-dub-panel is-error" role="alert">
+        <p class="message-dub-label">Natural delivery</p>
+        <p class="message-dub-error">${escapeHtml(msg.dubError || 'Dubbing failed — try again')}</p>
+      </div>
+    `;
+  }
+
+  return '';
+}
+
+function showDubWand(msg) {
+  if (msg._loading || msg._streaming) return false;
+  if (msg.dubStatus === 'ready') return false;
+  return isNaturalDeliveryAvailable(msg);
+}
+
+function resolveSourceRecording(msg) {
+  if (msg.sourceRecording?.blob) return msg.sourceRecording;
+  if (pendingSourceRecording?.blob) {
+    msg.sourceRecording = {
+      blob: pendingSourceRecording.blob,
+      mimeType: pendingSourceRecording.mimeType,
+      recordingMs: pendingSourceRecording.recordingMs,
+    };
+  }
+  return msg.sourceRecording;
+}
+
+async function pollDubbingJob(msg, signal) {
+  const deadline = Date.now() + 6 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if (signal.aborted || msg.id !== state.latestMessageId) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    const res = await apiFetch(`/api/dub/${encodeURIComponent(msg.dubId)}/status`, { signal });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Could not check dubbing status');
+    }
+
+    const status = String(data.status || '').toLowerCase();
+    if (status === 'dubbed') return;
+    if (status === 'failed') {
+      throw new Error(data.error || 'Dubbing failed');
+    }
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 4000);
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    });
+  }
+
+  throw new Error('Dubbing timed out — try again');
+}
+
+async function startOptionalDubbing(msg, wandBtn) {
+  if (msg.dubStatus === 'loading') return;
+  if (wandBtn?.dataset.busy === '1') return;
+
+  const recording = resolveSourceRecording(msg);
+  if (!recording?.blob) {
+    showToast('Natural delivery needs your voice recording — record a message first');
+    return;
+  }
+
+  const targetLang = inferMessageTargetLanguage(msg);
+  if (!targetLang) {
+    showToast('Translation still loading — try again in a moment');
+    return;
+  }
+
+  const dubTargetLang = resolveDubbingLanguage(targetLang);
+  if (!dubTargetLang) {
+    msg.dubStatus = 'error';
+    msg.dubError = dubbingLanguageError(targetLang);
+    renderConversation();
+    showToast(msg.dubError);
+    return;
+  }
+
+  cancelMessageDub(msg);
+  msg.dubStatus = 'loading';
+  msg.dubEstimateSec = estimateDubSeconds(recording.recordingMs);
+  msg.dubStartedAt = Date.now();
+  msg.dubError = null;
+  msg.dubId = null;
+  msg.dubTargetLang = dubTargetLang;
+
+  if (wandBtn) {
+    wandBtn.dataset.busy = '1';
+    wandBtn.disabled = true;
+    wandBtn.classList.add('is-loading');
+  }
+
+  renderConversation();
+
+  const controller = new AbortController();
+  msg._dubPollAbort = controller;
+
+  try {
+    const { lang1, lang2 } = getLanguagePair();
+    const sourceLang = msg.detectedLanguage || lang1;
+    const mimeType = recording.mimeType || 'audio/webm';
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+
+    const form = new FormData();
+    form.append('audio', recording.blob, `audio.${ext}`);
+    form.append('sourceLang', sourceLang);
+    form.append('targetLang', targetLang);
+    form.append('recordingMs', String(recording.recordingMs || 0));
+
+    const startRes = await apiFetch('/api/dub/start', {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    const startData = await startRes.json().catch(() => ({}));
+    if (!startRes.ok) {
+      const errMsg = startData.error || dubbingBusyError(startData.error) || 'Could not start dubbing';
+      throw new Error(errMsg);
+    }
+
+    msg.dubId = startData.dubbingId;
+    msg.dubTargetLang = startData.targetLang || dubTargetLang;
+    if (startData.estimatedSeconds) msg.dubEstimateSec = startData.estimatedSeconds;
+
+    startDubCountdown(msg);
+    await pollDubbingJob(msg, controller.signal);
+
+    const audioRes = await apiFetch(
+      `/api/dub/${encodeURIComponent(msg.dubId)}/audio?lang=${encodeURIComponent(msg.dubTargetLang)}`,
+      { signal: controller.signal },
+    );
+    if (!audioRes.ok) {
+      const errData = await audioRes.json().catch(() => ({}));
+      throw new Error(errData.error || 'Could not fetch dubbed audio');
+    }
+
+    const blob = await audioRes.blob();
+    if (!blob.size) throw new Error('Dubbed audio was empty');
+
+    msg.dubAudioUrl = URL.createObjectURL(blob);
+    msg.dubStatus = 'ready';
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    msg.dubStatus = 'error';
+    msg.dubError = dubbingBusyError(err.message) || err.message || 'Dubbing failed';
+    showToast(msg.dubError);
+  } finally {
+    stopDubCountdown(msg);
+    msg._dubPollAbort = null;
+    if (msg.id === state.latestMessageId) renderConversation();
+  }
+}
+
+async function playDubAudio(msg, btn) {
+  if (btn?.dataset.busy === '1') return;
+
+  releaseActionButtonFocus(btn?.closest('.message-card')?.querySelector('.copy-btn, .share-btn'));
+  if (btn) btn.dataset.busy = '1';
+  stopPlayback();
+
+  btn?.classList.add('playing');
+  if (btn) btn.disabled = true;
+
+  try {
+    if (!msg.dubAudioUrl) throw new Error('Dubbed audio not ready');
+    await playAudioUrl(msg.dubAudioUrl);
+  } catch (err) {
+    if (err?.name !== 'AbortError') showToast(err.message);
+  } finally {
+    if (btn) resetListenBtn(btn);
+  }
+}
+
+async function shareDubAudio(msg, btn) {
+  if (btn?.dataset.busy === '1') return;
+  if (btn) {
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+  }
+
+  try {
+    if (!msg.dubAudioUrl) throw new Error('Dubbed audio not ready');
+
+    const blob = await blobFromAudioUrl(msg.dubAudioUrl);
+    const filename = `lingu-dub-${Date.now()}.mp3`;
+    const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
+
+    if (typeof navigator.share !== 'function') {
+      showToast('Sharing audio is not supported on this device');
+      return;
+    }
+    if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+      showToast('Sharing audio is not supported on this device');
+      return;
+    }
+
+    await navigator.share({ files: [file], title: 'Natural delivery audio' });
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      showToast(err.message || 'Could not share audio');
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      delete btn.dataset.busy;
+      releaseActionButtonFocus(btn);
+    }
   }
 }
 
@@ -2601,7 +3066,9 @@ function createMessageCard(msg) {
   const el = document.createElement('article');
   el.className = 'message-card message-card-current';
   el.dataset.messageId = String(msg.id);
-  const hideActions = msg._streaming;
+  const hideActions = msg._streaming || msg._loading;
+  const dubPanelHtml = renderDubPanel(msg);
+  const wandVisible = showDubWand(msg);
 
   el.innerHTML = `
     <div class="message-bubble">
@@ -2609,12 +3076,15 @@ function createMessageCard(msg) {
         ${renderTranslatedContent(msg)}
       </div>
       <div class="message-footer-actions"${hideActions ? ' hidden' : ''}>
-        <button type="button" class="icon-btn share-btn share-btn-inline" title="Share" aria-label="Share">
+        <button type="button" class="icon-btn share-btn share-btn-inline" title="Share text" aria-label="Share text">
           ${SHARE_BTN_SVG}
         </button>
         <div class="message-actions-listen"${msg.audioUrl ? '' : ' hidden'}>
-          <button type="button" class="icon-btn listen-btn" title="Listen" aria-label="Listen">
+          <button type="button" class="icon-btn listen-btn listen-btn-inline" title="Listen" aria-label="Listen">
             ${LISTEN_BTN_SVG}
+          </button>
+          <button type="button" class="icon-btn share-audio-btn" title="Share audio" aria-label="Share audio">
+            ${SHARE_AUDIO_BTN_SVG}
           </button>
         </div>
         <button type="button" class="icon-btn copy-btn copy-btn-inline" title="Copy" aria-label="Copy">
@@ -2622,17 +3092,36 @@ function createMessageCard(msg) {
         </button>
       </div>
     </div>
+    ${dubPanelHtml}
+    <div class="message-voice-tools"${wandVisible ? '' : ' hidden'}>
+      <button type="button" class="message-voice-wand${msg.dubStatus === 'loading' ? ' is-loading' : ''}" title="Try natural delivery dubbing" aria-label="Try natural delivery dubbing"${msg.dubStatus === 'loading' ? ' disabled aria-busy="true"' : ''}>
+        ${WAND_BTN_SVG}
+      </button>
+    </div>
   `;
 
   if (msg.audioUrl) {
     el.querySelector('.listen-btn')?.classList.add('is-ready');
+    el.querySelector('.share-audio-btn')?.classList.add('is-ready');
   }
 
   const listenBtn = el.querySelector('.listen-btn');
+  const shareAudioBtn = el.querySelector('.share-audio-btn');
   const copyBtn = el.querySelector('.copy-btn');
-  listenBtn.addEventListener('click', () => playTranslation(msg, listenBtn));
+  const shareBtn = el.querySelector('.share-btn');
 
-  copyBtn.addEventListener('click', async () => {
+  listenBtn?.addEventListener('click', () => playTranslation(msg, listenBtn));
+  shareAudioBtn?.addEventListener('click', () => void shareClonedAudio(msg, shareAudioBtn));
+  el.querySelector('.dub-listen-btn')?.addEventListener('click', (event) => {
+    playDubAudio(msg, event.currentTarget);
+  });
+  el.querySelector('.dub-share-btn')?.addEventListener('click', (event) => {
+    void shareDubAudio(msg, event.currentTarget);
+  });
+  el.querySelector('.message-voice-wand')?.addEventListener('click', (event) => {
+    void startOptionalDubbing(msg, event.currentTarget);
+  });
+  copyBtn?.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(msg.translated);
       showToast('Copied!');
@@ -2642,9 +3131,7 @@ function createMessageCard(msg) {
       releaseActionButtonFocus(copyBtn);
     }
   });
-
-  const shareBtn = el.querySelector('.share-btn');
-  shareBtn.addEventListener('click', () => shareTranslation(msg.translated, shareBtn));
+  shareBtn?.addEventListener('click', () => shareTranslation(msg.translated, shareBtn));
 
   return el;
 }
@@ -2664,6 +3151,10 @@ function renderConversation() {
 
   if (latest._loading) {
     startLoadingDots(card.querySelector('.message-translated-text'), latest.original?.length || 0);
+  }
+
+  if (latest.dubStatus === 'loading') {
+    startDubCountdown(latest);
   }
 }
 

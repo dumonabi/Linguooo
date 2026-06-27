@@ -142,21 +142,16 @@ test.describe('Lingu.ooo', () => {
     await expect(page.locator('.message-translated-text')).not.toHaveText('one');
   });
 
-  test('reveals the listen button after background audio is ready', async ({ page }) => {
+  test('shows the voice button after translation', async ({ page }) => {
     await prepareApp(page);
     await recordOnce(page);
-    const listen = page.getByRole('button', { name: 'Listen' });
-    await expect(listen).toBeVisible({ timeout: 12000 });
+    const voiceBtn = page.getByRole('button', { name: 'Listen' });
+    await expect(voiceBtn).toBeVisible({ timeout: 8000 });
   });
 
   test('restores saved language pair and sends it with translate requests', async ({ page }) => {
     let translateRequest = null;
-    await resetClientState(page);
-    await page.addInitScript(() => {
-      localStorage.setItem('lingo-languages', JSON.stringify({ lang1: 'es', lang2: 'th' }));
-    });
-    await page.addInitScript(MEDIA_MOCK_INIT_SCRIPT);
-    await setupApiMocks(page, {
+    await prepareApp(page, {
       onTranslate: async (request) => {
         translateRequest = JSON.parse(request.postData() || '{}');
         return {
@@ -168,12 +163,16 @@ test.describe('Lingu.ooo', () => {
         };
       },
     });
-    await page.goto('/');
+    await page.addInitScript(() => {
+      localStorage.setItem('lingo-languages', JSON.stringify({ lang1: 'es', lang2: 'th' }));
+    });
+    await page.reload();
     await expect(page.getByRole('heading', { name: 'Lingu.ooo', level: 1 })).toBeVisible();
 
     await page.locator('#dictation-input').fill('hola');
+    await expect(page.locator('#dictation-translate')).toBeEnabled();
     await page.locator('#dictation-translate').click();
-    await expect(page.locator('.message-translated-text')).toHaveText('สวัสดี');
+    await expect(page.locator('.message-translated-text')).toHaveText('สวัสดี', { timeout: 8000 });
     expect(translateRequest?.lang1).toBe('es');
     expect(translateRequest?.lang2).toBe('th');
   });
