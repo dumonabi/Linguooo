@@ -148,4 +148,33 @@ test.describe('Lingu.ooo', () => {
     const listen = page.getByRole('button', { name: 'Listen' });
     await expect(listen).toBeVisible({ timeout: 12000 });
   });
+
+  test('restores saved language pair and sends it with translate requests', async ({ page }) => {
+    let translateRequest = null;
+    await resetClientState(page);
+    await page.addInitScript(() => {
+      localStorage.setItem('lingo-languages', JSON.stringify({ lang1: 'es', lang2: 'th' }));
+    });
+    await page.addInitScript(MEDIA_MOCK_INIT_SCRIPT);
+    await setupApiMocks(page, {
+      onTranslate: async (request) => {
+        translateRequest = JSON.parse(request.postData() || '{}');
+        return {
+          rawText: 'hola',
+          detectedLanguage: 'es',
+          sourceText: 'hola',
+          translatedText: 'สวัสดี',
+          targetLanguage: 'th',
+        };
+      },
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'Lingu.ooo', level: 1 })).toBeVisible();
+
+    await page.locator('#dictation-input').fill('hola');
+    await page.locator('#dictation-translate').click();
+    await expect(page.locator('.message-translated-text')).toHaveText('สวัสดี');
+    expect(translateRequest?.lang1).toBe('es');
+    expect(translateRequest?.lang2).toBe('th');
+  });
 });

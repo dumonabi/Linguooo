@@ -559,7 +559,10 @@ async function init() {
   updateComposeState();
   scheduleComposeFocus();
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') scheduleComposeFocus();
+    if (document.visibilityState === 'visible') {
+      syncLanguageStateFromStorage();
+      scheduleComposeFocus();
+    }
   });
   void purgeStalePendingRecordings();
   void refreshPendingBanner();
@@ -647,11 +650,7 @@ async function loadLanguages() {
 }
 
 function initPickers() {
-  const saved = loadSavedLanguages();
-  if (saved?.lang1 && saved?.lang2 && saved.lang1 !== saved.lang2) {
-    state.lang1 = saved.lang1;
-    state.lang2 = saved.lang2;
-  }
+  restoreSavedLanguages();
 
   picker1 = createLangPicker($('#lang-picker-1'), {
     languages: state.languages,
@@ -682,6 +681,8 @@ function initPickers() {
       onLanguagesChanged();
     },
   });
+
+  saveLanguages();
 }
 
 function loadSavedLanguages() {
@@ -690,6 +691,78 @@ function loadSavedLanguages() {
   } catch {
     return null;
   }
+}
+
+function isKnownLanguage(code) {
+  return Boolean(code && state.languages.some((lang) => lang.code === code));
+}
+
+function languagePairKey(lang1, lang2) {
+  return [lang1, lang2].sort().join('\0');
+}
+
+function syncLanguageStateFromPickers() {
+  const lang1 = picker1?.getValue() || state.lang1;
+  const lang2 = picker2?.getValue() || state.lang2;
+  if (lang1 && lang2 && lang1 !== lang2) {
+    state.lang1 = lang1;
+    state.lang2 = lang2;
+  }
+}
+
+function restoreSavedLanguages() {
+  const saved = loadSavedLanguages();
+  if (!saved?.lang1 || !saved?.lang2 || saved.lang1 === saved.lang2) return false;
+
+  if (isKnownLanguage(saved.lang1) && isKnownLanguage(saved.lang2)) {
+    state.lang1 = saved.lang1;
+    state.lang2 = saved.lang2;
+    return true;
+  }
+
+  // Language list may still be the offline fallback — trust saved pair anyway.
+  if (state.languages.length <= 2) {
+    state.lang1 = saved.lang1;
+    state.lang2 = saved.lang2;
+    return true;
+  }
+
+  return false;
+}
+
+async function ensureLanguagesLoaded() {
+  if (state.languages.length > 2) return;
+
+  try {
+    const res = await apiFetch('/api/languages');
+    if (!res.ok) return;
+    state.languages = await res.json();
+    restoreSavedLanguages();
+    picker1?.setValue(state.lang1);
+    picker2?.setValue(state.lang2);
+  } catch {
+    // offline fallback stays in place
+  }
+}
+
+function syncLanguageStateFromStorage() {
+  if (!state.languages.length) return;
+  void ensureLanguagesLoaded();
+  const prevKey = languagePairKey(state.lang1, state.lang2);
+  syncLanguageStateFromPickers();
+  restoreSavedLanguages();
+  picker1?.setValue(state.lang1);
+  picker2?.setValue(state.lang2);
+  const nextKey = languagePairKey(state.lang1, state.lang2);
+  if (prevKey !== nextKey) {
+    cancelDraftTranslationPrefetch();
+  }
+}
+
+function getLanguagePair() {
+  syncLanguageStateFromPickers();
+  restoreSavedLanguages();
+  return { lang1: state.lang1, lang2: state.lang2 };
 }
 
 function saveLanguages() {
@@ -705,6 +778,7 @@ function onLanguagesChanged() {
   cancelDraftTranslationPrefetch();
   clearConversation();
   saveLanguages();
+  void clearAllPendingRecordings();
   updateComposeState();
 }
 
@@ -1137,6 +1211,7 @@ async function translateDraft() {
 }
 
 async function sendTextForTranslation({ text, signal, requestId, mode = 'active', prefetchRef }) {
+  const { lang1, lang2 } = getLanguagePair();
   let res;
   try {
     res = await withTimeout(
@@ -1145,8 +1220,8 @@ async function sendTextForTranslation({ text, signal, requestId, mode = 'active'
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
-          lang1: state.lang1,
-          lang2: state.lang2,
+          lang1,
+          lang2,
           context: buildConversationContext(),
         }),
         signal,
@@ -1199,10 +1274,11 @@ async function sendTextForTranslation({ text, signal, requestId, mode = 'active'
 }
 
 async function fetchTranscriptFromAudio({ blob, mimeType }) {
+  const { lang1, lang2 } = getLanguagePair();
   const form = new FormData();
   form.append('audio', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
-  form.append('lang1', state.lang1);
-  form.append('lang2', state.lang2);
+  form.append('lang1', lang1);
+  form.append('lang2', lang2);
 
   const timeoutMs = Math.min(90000, Math.max(15000, 12000 + (blob?.size || 0) / 8));
 
@@ -2154,8 +2230,25 @@ async function processPendingQueue() {
     return;
   }
 
+  syncLanguageStateFromStorage();
+  const { lang1, lang2 } = getLanguagePair();
+  const currentPairKey = languagePairKey(lang1, lang2);
+  const compatible = [];
+  for (const item of actionable) {
+    if (languagePairKey(item.lang1, item.lang2) === currentPairKey) {
+      compatible.push(item);
+    } else {
+      await removePendingRecording(item.id);
+    }
+  }
+
+  if (!compatible.length) {
+    await refreshPendingBanner();
+    return;
+  }
+
   pendingQueueBusy = true;
-  const item = actionable.sort((a, b) => b.createdAt - a.createdAt)[0];
+  const item = compatible.sort((a, b) => b.createdAt - a.createdAt)[0];
   const requestId = latestTranslationRequest;
 
   try {
@@ -2170,8 +2263,8 @@ async function processPendingQueue() {
       blob: item.blob,
       mimeType: item.mimeType,
       recordingMs: item.recordingMs,
-      lang1: item.lang1,
-      lang2: item.lang2,
+      lang1,
+      lang2,
       context,
       pendingId: item.id,
       requestId,
@@ -2206,11 +2299,18 @@ async function processPendingQueue() {
 
 function bindPendingQueue() {
   window.addEventListener('online', wakePendingQueue);
-  window.addEventListener('focus', wakePendingQueue);
+  window.addEventListener('focus', () => {
+    syncLanguageStateFromStorage();
+    wakePendingQueue();
+  });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') wakePendingQueue();
+    if (document.visibilityState === 'visible') {
+      syncLanguageStateFromStorage();
+      wakePendingQueue();
+    }
   });
   window.addEventListener('pageshow', (event) => {
+    syncLanguageStateFromStorage();
     if (event.persisted) wakePendingQueue();
   });
 }
@@ -2220,14 +2320,15 @@ async function sendRecordingForTranslation({ blob, mimeType, recordingMs }) {
   const controller = new AbortController();
   activeConverseController = controller;
   const requestId = ++latestTranslationRequest;
+  const { lang1, lang2 } = getLanguagePair();
 
   try {
     const data = await submitRecording({
       blob,
       mimeType,
       recordingMs,
-      lang1: state.lang1,
-      lang2: state.lang2,
+      lang1,
+      lang2,
       context: buildConversationContext(),
       signal: controller.signal,
       requestId,
