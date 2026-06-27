@@ -32,6 +32,7 @@ export async function setupApiMocks(page, options = {}) {
           authRequired,
           dubbingConfigured: false,
           dubbingLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'vi'],
+          cloneVoiceLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt'],
         }),
       });
     }

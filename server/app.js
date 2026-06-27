@@ -44,6 +44,10 @@ import {
   listDubbingLanguageCodes,
   resolveDubbingLanguage,
 } from './dubbing-languages.js';
+import {
+  listCloneVoiceLanguageCodes,
+  supportsClonedVoice,
+} from './elevenlabs-languages.js';
 
 dotenv.config();
 
@@ -426,7 +430,7 @@ async function generateSpeech(openai, text, lang, voiceId = null) {
   if (cached) return cached;
 
   let buffer;
-  if (voiceId && isElevenLabsConfigured()) {
+  if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
     buffer = await generateClonedSpeech(input, voiceId);
   } else {
     const speech = await withRetry(() =>
@@ -474,6 +478,7 @@ export function createApp() {
       authRequired: isAuthRequired(),
       dubbingConfigured: isElevenLabsConfigured(),
       dubbingLanguages: listDubbingLanguageCodes(),
+      cloneVoiceLanguages: listCloneVoiceLanguageCodes(),
     });
   });
 
@@ -793,17 +798,21 @@ export function createApp() {
     }
 
     const langCode = lang ? String(lang).toLowerCase().trim() : null;
-    const voiceMode = req.body.voiceMode === 'clone' ? 'clone' : 'default';
+    const wantsClone = req.body.voiceMode !== 'default';
 
     try {
       const voiceProfile = await getVoiceProfile(req.user.id);
-      const voiceId = voiceMode === 'clone' ? resolveVoiceId(req.user, voiceProfile) : null;
-      if (voiceMode === 'clone' && !voiceId) {
+      const voiceId = resolveVoiceId(req.user, voiceProfile);
+      const useClone = wantsClone && voiceId && supportsClonedVoice(langCode);
+
+      if (wantsClone && supportsClonedVoice(langCode) && !voiceId) {
         return res.status(400).json({ error: 'Personal voice not ready — set up your voice profile first' });
       }
-      const buffer = await generateSpeech(openai, text, langCode, voiceId);
+
+      const buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
       res.set('Content-Type', 'audio/mpeg');
       res.set('Cache-Control', 'private, max-age=3600');
+      res.set('X-Voice-Mode', useClone ? 'clone' : 'default');
       res.send(buffer);
     } catch (err) {
       console.error('TTS error:', err);

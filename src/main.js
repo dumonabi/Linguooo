@@ -57,6 +57,11 @@ let dubbingLanguages = new Set([
   'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sv', 'tr', 'uk', 'vi',
   'zh', 'tl', 'ta',
 ]);
+let cloneVoiceLanguages = new Set([
+  'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'hi', 'hr', 'id',
+  'it', 'ja', 'ko', 'ms', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'ta', 'tl',
+  'tr', 'uk', 'zh',
+]);
 
 let picker1;
 let picker2;
@@ -140,9 +145,19 @@ function prefetchAudio(msg) {
   return loadMessageAudio(msg, { prefetch: true });
 }
 
+function speakModeForMessage(msg) {
+  const lang = msg.targetLanguage;
+  if (!lang) return 'default';
+  const code = lang === 'nn' ? 'no' : lang;
+  if (!cloneVoiceLanguages.has(code)) return 'default';
+  if (!state.user?.voiceReady) return 'default';
+  return 'clone';
+}
+
 function audioCacheKey(msg) {
   const userId = state.user?.id || 'default';
-  return `${userId}|clone|${msg.translated}|${msg.targetLanguage}`;
+  const mode = speakModeForMessage(msg);
+  return `${userId}|${mode}|${msg.translated}|${msg.targetLanguage}`;
 }
 
 function getMessageCardEl(message) {
@@ -465,7 +480,7 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
           body: JSON.stringify({
             text: msg.translated,
             lang: msg.targetLanguage,
-            voiceMode: 'clone',
+            voiceMode: speakModeForMessage(msg),
           }),
           signal: controller.signal,
         });
@@ -1085,6 +1100,9 @@ async function checkHealth() {
     authRequired = Boolean(data.authRequired);
     if (Array.isArray(data.dubbingLanguages) && data.dubbingLanguages.length) {
       dubbingLanguages = new Set(data.dubbingLanguages);
+    }
+    if (Array.isArray(data.cloneVoiceLanguages) && data.cloneVoiceLanguages.length) {
+      cloneVoiceLanguages = new Set(data.cloneVoiceLanguages);
     }
     return true;
   } catch {
