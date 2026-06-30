@@ -5,7 +5,7 @@ import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
 import { getRecordingMimeType } from './media-utils.js';
-import { apiFetch, clearAuthToken, fetchCurrentUser, getAuthToken, setStoredUser } from './auth.js';
+import { apiFetch, clearAuthToken, fetchCurrentUser, getAuthToken, getStoredUser, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
 import { mountAuthGate, openAuthGate, resetAuthGate } from './auth-gate.js';
 import { initUserProfile, refreshUserSession } from './user-profile.js';
 import {
@@ -707,15 +707,16 @@ async function init() {
 async function ensureAuthenticated() {
   if (!authRequired) return true;
 
-  if (getAuthToken()) {
-    const data = await fetchCurrentUser();
-    if (data?.user) {
-      state.user = data.user;
-      return true;
-    }
-    clearAuthToken();
+  const user = await restoreSessionIfPossible();
+  if (user) {
+    state.user = user;
+    void fetchCurrentUser().then((data) => {
+      if (data?.user) state.user = data.user;
+    });
+    return true;
   }
 
+  clearAuthToken();
   return showAuthGate();
 }
 
@@ -2697,7 +2698,14 @@ function bindEvents() {
   recordingCancelBtn.addEventListener('click', () => void cancelRecording());
   recordingSendBtn.addEventListener('click', () => void acceptRecording());
   window.addEventListener('lingo:unauthorized', () => {
-    if (authRequired) showAuthGate();
+    if (!authRequired) return;
+    void (async () => {
+      if (await revalidateSession()) {
+        state.user = getStoredUser();
+        return;
+      }
+      showAuthGate();
+    })();
   });
   window.addEventListener('pagehide', releaseMic);
 }

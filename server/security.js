@@ -4,6 +4,7 @@ import {
   getGuestUser,
   isAuthRequired,
 } from './users.js';
+import { verifySessionToken } from './session-token.js';
 
 export { isAuthRequired } from './users.js';
 
@@ -71,6 +72,9 @@ export function resolveRequestUser(req) {
   const header = req.headers.authorization;
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return null;
+
+  const sessionUser = verifySessionToken(token);
+  if (sessionUser) return sessionUser;
 
   return findUserByPassphraseSync(token);
 }

@@ -44,6 +44,7 @@ import {
   listCloneVoiceLanguageCodes,
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
+import { createSessionToken } from './session-token.js';
 
 dotenv.config();
 
@@ -561,6 +562,7 @@ export function createApp() {
         ok: true,
         user: publicUserProfile(user, voiceProfile),
         recoveryPhrase,
+        sessionToken: createSessionToken(user),
       });
     } catch (err) {
       console.error('Register error:', err);
@@ -579,7 +581,11 @@ export function createApp() {
     const user = await findUserByPassphrase(attempt);
     if (user) {
       const voiceProfile = await getVoiceProfile(user.id);
-      return res.json({ ok: true, user: publicUserProfile(user, voiceProfile) });
+      return res.json({
+        ok: true,
+        user: publicUserProfile(user, voiceProfile),
+        sessionToken: createSessionToken(user),
+      });
     }
 
     res.status(401).json({ error: 'Wrong recovery phrase or password' });

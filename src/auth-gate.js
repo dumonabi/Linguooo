@@ -48,12 +48,12 @@ function showRecoveryReveal(gate, phrase) {
   reveal.hidden = false;
 }
 
-async function completeAuth({ gate, passphrase, user, onSuccess, onUnauthorized }) {
+async function completeAuth({ gate, passphrase, user, sessionToken, onSuccess, onUnauthorized }) {
   const normalized = normalizeClientPassphrase(passphrase);
-  setAuthToken(normalized);
+  setAuthToken(sessionToken || normalized);
   if (user) {
     setStoredUser(user);
-    saveRecoveryPhrase(user.id, normalized);
+    if (normalized) saveRecoveryPhrase(user.id, normalized);
   }
   gate.hidden = true;
   if (onUnauthorized) {
@@ -80,6 +80,7 @@ export function mountAuthGate({
 
   let pendingRecoveryPhrase = '';
   let pendingUser = null;
+  let pendingSessionToken = '';
 
   if (passphraseInput) {
     attachBip39WordAutocomplete(
@@ -119,11 +120,13 @@ export function mountAuthGate({
       gate,
       passphrase: pendingRecoveryPhrase,
       user: pendingUser,
+      sessionToken: pendingSessionToken,
       onSuccess,
       onUnauthorized,
     });
     pendingRecoveryPhrase = '';
     pendingUser = null;
+    pendingSessionToken = '';
   });
 
   signInForm?.addEventListener('submit', async (event) => {
@@ -150,6 +153,7 @@ export function mountAuthGate({
         gate,
         passphrase,
         user: data.user,
+        sessionToken: data.sessionToken,
         onSuccess,
         onUnauthorized,
       });
@@ -182,6 +186,7 @@ export function mountAuthGate({
 
       pendingRecoveryPhrase = data.recoveryPhrase || '';
       pendingUser = data.user || null;
+      pendingSessionToken = data.sessionToken || '';
       if (superPasswordInput) superPasswordInput.value = '';
       showRecoveryReveal(gate, pendingRecoveryPhrase);
     } catch {
