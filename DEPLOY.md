@@ -2,9 +2,10 @@
 
 ## Live URL
 
-**https://lingu-ooo.vercel.app**
+**https://lingo-self.vercel.app**
 
-> Vercel project: `linguooo` · GitHub repo: `Linguooo`
+> Vercel project: `lingo-self` · GitHub repo: `Linguooo`  
+> Legacy URL `lingu-ooo.vercel.app` is an older deployment — use **lingo-self** for the current app.
 
 ---
 
@@ -60,3 +61,5 @@ Vercel **Hobby** only allows built-in cron once per day. For 5–10 min interval
 | `Too many messages this hour` | Rate limit (100 messages/hour per IP). Wait or adjust in `server/security.js` |
 | Function timeout / 504 | Upgrade to Vercel Pro, or use shorter voice messages |
 | Mic not working | Use Chrome or Safari, allow microphone permission, site must be HTTPS |
+| API returns 500 on Vercel | Serverless uses `/tmp` for user/voice data — ensure latest deploy is on **lingo-self** |
+| Old UI on `lingu-ooo.vercel.app` | That alias may point to a stale deployment — use **lingo-self.vercel.app** or update the alias in Vercel → Domains |

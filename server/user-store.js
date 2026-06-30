@@ -1,10 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getUserRegistryPath } from './data-paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REGISTRY_PATH = process.env.USER_REGISTRY_PATH?.trim()
-  || path.join(__dirname, '..', 'data', 'users', 'registry.json');
+const REGISTRY_PATH = getUserRegistryPath();
 
 let cachedUsers = null;
 let loadPromise = null;

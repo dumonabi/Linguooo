@@ -59,4 +59,4 @@ npm run build
 npm start
 ```
 
-Live app: **https://lingu-ooo.vercel.app**
+Live app: **https://lingo-self.vercel.app**

@@ -1,10 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getVoiceDataRoot } from './data-paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_ROOT = process.env.VOICE_DATA_DIR?.trim()
-  || path.join(__dirname, '..', 'data', 'voices');
+const DATA_ROOT = getVoiceDataRoot();
 
 function userDir(userId) {
   return path.join(DATA_ROOT, userId);

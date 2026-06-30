@@ -96,7 +96,9 @@ function isVercelOrigin(origin) {
     || /^https:\/\/lingu-ooo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin)
     || /^https:\/\/linguooo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin)
     || /^https:\/\/lingoo-ooo(-[a-z0-9-]+)?\.vercel\.app$/.test(origin)
-    || /^https:\/\/lingoo-ooo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin);
+    || /^https:\/\/lingoo-ooo-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin)
+    || /^https:\/\/lingo-self(-[a-z0-9-]+)?\.vercel\.app$/.test(origin)
+    || /^https:\/\/lingo-self-[a-z0-9-]+-[^/]+\.vercel\.app$/.test(origin);
 }
 
 export function getCorsOptions() {
