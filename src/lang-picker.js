@@ -1,6 +1,21 @@
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 
-const MIN_QUERY_LENGTH = 2;
+const LANGUAGE_SEARCH_ALIASES = {
+  th: ['thai', 'tailand', 'tailandés', 'tailandes', 'ไทย'],
+  zh: ['chinese', 'chino', 'mandarin', '中文'],
+  ja: ['japanese', 'japonés', 'japones', '日本語'],
+  ko: ['korean', 'coreano', '한국어'],
+  ar: ['arabic', 'árabe', 'arabe', 'عربي'],
+  es: ['spanish', 'español', 'espanol', 'castellano'],
+  en: ['english', 'inglés', 'ingles'],
+  pt: ['portuguese', 'portugués', 'portugues'],
+  fr: ['french', 'francés', 'frances'],
+  de: ['german', 'alemán', 'aleman'],
+  it: ['italian', 'italiano'],
+  ru: ['russian', 'ruso'],
+  hi: ['hindi'],
+  vi: ['vietnamese', 'vietnamita'],
+};
 
 const langPickerRegistry = [];
 
@@ -11,12 +26,13 @@ export function hideAllLangPickerCarets() {
 }
 
 export function createLangPicker(container, {
-  languages,
+  languages: initialLanguages = [],
   value,
   onChange,
   placeholder = '',
   onFocusEdit,
 } = {}) {
+  let languages = [...initialLanguages];
   let selectedCode = value || '';
 
   const root = document.createElement('div');
@@ -80,10 +96,19 @@ export function createLangPicker(container, {
     return languages.find((l) => l.code === code);
   }
 
+  function languageMatchesQuery(lang, q) {
+    const code = lang.code.toLowerCase();
+    const name = lang.name.toLowerCase();
+    if (code.startsWith(q) || name.includes(q)) return true;
+    const aliases = LANGUAGE_SEARCH_ALIASES[lang.code];
+    return aliases?.some((alias) => alias.includes(q) || q.includes(alias)) || false;
+  }
+
   function filteredLanguages() {
     const q = input.value.trim().toLowerCase();
-    if (q.length < MIN_QUERY_LENGTH) return [];
-    return languages.filter((l) => l.name.toLowerCase().startsWith(q));
+    const sorted = [...languages].sort((a, b) => a.name.localeCompare(b.name));
+    if (!q) return sorted;
+    return sorted.filter((lang) => languageMatchesQuery(lang, q));
   }
 
   function renderList() {
@@ -168,7 +193,7 @@ export function createLangPicker(container, {
     onFocusEdit?.();
     input.value = '';
     input.placeholder = '';
-    list.hidden = true;
+    renderList();
     requestAnimationFrame(() => {
       input.setSelectionRange(0, 0);
       syncCaret();
@@ -242,7 +267,17 @@ export function createLangPicker(container, {
     showSelectedDisplay();
   }
 
+  function setLanguages(nextLanguages) {
+    languages = Array.isArray(nextLanguages) ? [...nextLanguages] : [];
+    if (selectedCode && !findLang(selectedCode)) {
+      selectedCode = languages[0]?.code || '';
+      if (selectedCode) onChange(selectedCode);
+    }
+    showSelectedDisplay();
+    if (document.activeElement === input) renderList();
+  }
+
   showSelectedDisplay();
 
-  return { setValue, getValue: () => selectedCode };
+  return { setValue, getValue: () => selectedCode, setLanguages };
 }

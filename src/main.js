@@ -28,6 +28,14 @@ const DEFAULT_LANG2 = 'es';
 const OFFLINE_LANGUAGES = [
   { code: 'en', name: 'English' },
   { code: 'es', name: 'Spanish' },
+  { code: 'th', name: 'Thai' },
+  { code: 'zh', name: 'Chinese' },
+  { code: 'fr', name: 'French' },
+  { code: 'de', name: 'German' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'it', name: 'Italian' },
 ];
 const MAX_RECORDING_MS = 90_000;
 const RECORDING_TAIL_MS = 150;
@@ -673,6 +681,7 @@ async function init() {
 
   await loadLanguages();
   initPickers();
+  void ensureLanguagesLoaded();
   bindEvents();
   bindMicHelp();
   bindPendingQueue();
@@ -776,6 +785,7 @@ async function loadLanguages() {
   } catch {
     state.languages = [...OFFLINE_LANGUAGES];
   }
+  syncPickerLanguages();
 }
 
 function initPickers() {
@@ -862,18 +872,27 @@ function restoreSavedLanguages() {
 }
 
 async function ensureLanguagesLoaded() {
-  if (state.languages.length > OFFLINE_LANGUAGES.length) return;
+  if (state.languages.length > OFFLINE_LANGUAGES.length) {
+    syncPickerLanguages();
+    return;
+  }
 
   try {
     const res = await apiFetch('/api/languages');
     if (!res.ok) return;
     state.languages = await res.json();
+    syncPickerLanguages();
     restoreSavedLanguages();
     picker1?.setValue(state.lang1);
     picker2?.setValue(state.lang2);
   } catch {
     // offline fallback stays in place
   }
+}
+
+function syncPickerLanguages() {
+  picker1?.setLanguages(state.languages);
+  picker2?.setLanguages(state.languages);
 }
 
 function syncLanguageStateFromStorage() {
