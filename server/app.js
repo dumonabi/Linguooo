@@ -571,6 +571,7 @@ export function createApp() {
       res.json({
         ok: true,
         sampleCount: profile.samples.length,
+        sampleId: profile.samples.at(-1)?.id ?? null,
         status: profile.status,
         canRecordMore: profile.samples.length < MAX_VOICE_SAMPLES,
         readyForClone: profile.samples.length >= MAX_VOICE_SAMPLES,

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lingu-ooo-v1';
+const CACHE_NAME = 'lingu-ooo-v2';
 
 const PRECACHE_URLS = [
   '/',
@@ -48,6 +48,21 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (isApiRequest(url)) return;
+
+  if (url.pathname.startsWith('/assets/')) {
+    event.respondWith(
+      fetch(request)
+        .then(async (response) => {
+          if (shouldCache(response)) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(request, response.clone());
+          }
+          return response;
+        })
+        .catch(async () => caches.match(request)),
+    );
+    return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(

@@ -3742,6 +3742,34 @@ html.user-profile-menu-open body {
   padding: 0;
 }
 
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .user-profile-recording-accept {
+  display: flex;
+}
+
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.38);
+}
+
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level-bar {
+  background: #ffffff;
+}
+
+.user-profile-voice-samples-page .user-profile-recording-accept {
+  color: var(--accent-light);
+  background: rgba(42, 235, 108, 0.12);
+  border: 1px solid rgba(42, 235, 108, 0.45);
+}
+
+.user-profile-voice-samples-page .user-profile-saving-note {
+  margin: 0.5rem 0 0;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.72);
+}
+
 .user-profile-record-again-wrap {
   flex: 0 0 auto;
   display: flex;

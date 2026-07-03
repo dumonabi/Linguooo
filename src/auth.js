@@ -157,17 +157,28 @@ export function authHeaders(extra = {}) {
   return headers;
 }
 
-export async function apiFetch(url, options = {}) {
+function cloneFetchBody(body) {
+  if (!(body instanceof FormData)) return body;
+  const copy = new FormData();
+  for (const [key, value] of body.entries()) {
+    copy.append(key, value);
+  }
+  return copy;
+}
+
+function buildFetchInit(options = {}) {
   const headers = authHeaders(options.headers || {});
-  let res = await fetch(url, { ...options, headers });
+  const body = options.body instanceof FormData ? cloneFetchBody(options.body) : options.body;
+  return { ...options, headers, body };
+}
+
+export async function apiFetch(url, options = {}) {
+  let res = await fetch(url, buildFetchInit(options));
 
   if (res.status === 401 && getAuthToken()) {
     const recovered = await revalidateSession();
     if (recovered) {
-      res = await fetch(url, {
-        ...options,
-        headers: authHeaders(options.headers || {}),
-      });
+      res = await fetch(url, buildFetchInit(options));
     }
   }
 

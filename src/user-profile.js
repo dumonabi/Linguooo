@@ -9,7 +9,7 @@ import {
 } from './profile-slots.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { getRecordingMimeType, waitForRecorderStop } from './media-utils.js';
+import { buildRecordingBlob, getRecordingMimeType, isIosDevice } from './media-utils.js';
 import { formatCloneVoiceLanguageGroups } from './elevenlabs-languages.js';
 import {
   getProfileMenuSelectionStorageKey,
@@ -822,11 +822,13 @@ function stopProfileWaveLoop() {
 
 function setupProfileRecordingWave() {
   requestAnimationFrame(() => {
-    if (!recordingSession) return;
-    const { levelEl, toolbar } = getProfileRecordingToolbar();
-    profileMicWave.ensureLevelBars(levelEl, toolbar, true);
-    profileMicWave.observeWaveResize(levelEl, toolbar, () => Boolean(recordingSession));
-    startProfileWaveLoop();
+    requestAnimationFrame(() => {
+      if (!recordingSession) return;
+      const { levelEl, toolbar } = getProfileRecordingToolbar();
+      profileMicWave.ensureLevelBars(levelEl, toolbar, true);
+      profileMicWave.observeWaveResize(levelEl, toolbar, () => Boolean(recordingSession));
+      startProfileWaveLoop();
+    });
   });
 }
 
@@ -873,14 +875,16 @@ function buildVoiceRecordingMarkup({
   return `
     ${recordingAtLimit ? `<p class="user-profile-note">${ui.recordingBlocked}</p>` : ''}
 
-    ${showRecord || (isRecording && !recordingAtLimit) ? `
+    ${showRecord || (isRecording && !recordingAtLimit) || savingSample ? `
     <div class="user-profile-prompt">
       <p class="user-profile-prompt-text">"${escapeHtml(prompt)}"</p>
     </div>
     ` : ''}
 
     <div class="user-profile-actions${isRecording ? ' user-profile-actions--recording' : ''}">
-      ${isRecording ? `
+      ${savingSample ? `
+      <p class="user-profile-note user-profile-saving-note">${escapeHtml(ui.savingSample || 'Saving sample…')}</p>
+      ` : isRecording ? `
       <p class="user-profile-recording-timer-wrap" aria-live="polite">
         <span class="user-profile-recording-timer" id="user-voice-recording-timer">0:00</span>
       </p>
@@ -992,6 +996,14 @@ async function renderVoiceSamplesPage() {
     setupProfileRecordingWave();
     updateProfileRecordingTimer();
   }
+}
+
+async function renderActiveProfileUi() {
+  if (voiceSamplesPageOpen) {
+    await renderVoiceSamplesPage();
+    return;
+  }
+  await renderMenuContent();
 }
 
 async function renderMenuContent() {
@@ -1361,8 +1373,8 @@ function setMenuOpen(open) {
   updateTrigger();
 }
 
-async function refreshVoiceProfile() {
-  const slot = getCurrentProfileSlot();
+async function refreshVoiceProfile(slotNumber = getCurrentProfileSlot()) {
+  const slot = slotNumber;
   if (!slot) return;
 
   const res = await apiFetch(voiceApiPath('/api/voice/profile', slot));
@@ -1455,11 +1467,10 @@ async function startVoiceSampleRecording() {
       startedAt: Date.now(),
     };
 
-    recorder.start(250);
+    recorder.start(isIosDevice() ? undefined : 250);
     profileMicWave.primeMicAudioOnGesture();
     profileMicWave.prepareMicMeter(stream);
-    renderMenuContent();
-    setupProfileRecordingWave();
+    await renderActiveProfileUi();
   } catch {
     toast('Microphone access is required to record voice samples');
   }
@@ -1485,10 +1496,10 @@ async function stopVoiceSampleRecording() {
   }
 
   savingSample = true;
-  renderMenuContent();
+  await renderActiveProfileUi();
 
   try {
-    await waitForRecorderStop(session.recorder);
+    const blob = await buildRecordingBlob(session.chunks, session.mimeType, session.recorder);
     teardownProfileRecordingWave();
     session.stream.getTracks().forEach((track) => track.stop());
     recordingSession = null;
@@ -1499,7 +1510,6 @@ async function stopVoiceSampleRecording() {
       return;
     }
 
-    const blob = new Blob(session.chunks, { type: session.mimeType });
     if (!blob.size) {
       toast('No audio captured — try again');
       return;
@@ -1508,6 +1518,7 @@ async function stopVoiceSampleRecording() {
     const form = new FormData();
     form.append('audio', blob, `voice-sample.${session.mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
     form.append('durationMs', String(durationMs));
+    form.append('slot', String(slot));
 
     const res = await apiFetch(voiceApiPath('/api/voice/samples', slot), {
       method: 'POST',
@@ -1516,37 +1527,29 @@ async function stopVoiceSampleRecording() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       toast(data.error || 'Could not save voice sample');
-      renderMenuContent();
+      await renderActiveProfileUi();
       return;
     }
 
-    if (voiceProfile && Number.isFinite(data.sampleCount)) {
-      voiceProfile = {
-        ...voiceProfile,
-        sampleCount: data.sampleCount,
-        canRecordMore: data.canRecordMore ?? data.sampleCount < (voiceProfile.maxSamples ?? MIN_SAMPLES),
-        status: data.status ?? voiceProfile.status,
-        samplesComplete: data.sampleCount >= (voiceProfile.maxSamples ?? MIN_SAMPLES),
-      };
-      syncStoredUserVoiceState();
-      renderMenuContent();
-    }
-
     toast('Voice sample saved');
-    await refreshUserSession();
+    await refreshVoiceProfile(slot);
 
     if (data.readyForClone && voiceProfile?.elevenlabsConfigured !== false && !getStoredUser()?.voiceReady) {
       await createVoiceProfile(false);
     }
   } catch (err) {
     toast(err.message || 'Could not save voice sample');
-    renderMenuContent();
+    await renderActiveProfileUi();
   } finally {
     savingSample = false;
     if (recordingSession) discardActiveRecording();
     else teardownProfileRecordingWave();
-    session.stream.getTracks().forEach((track) => track.stop());
-    renderMenuContent();
+    try {
+      session.stream.getTracks().forEach((track) => track.stop());
+    } catch {
+      // stream may already be stopped
+    }
+    await renderActiveProfileUi();
   }
 }
 

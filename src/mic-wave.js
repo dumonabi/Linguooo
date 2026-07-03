@@ -31,7 +31,7 @@ export function createMicWave() {
   function primeMicAudioOnGesture() {
     const ctx = getMicMeterContext();
     if (!ctx || ctx.state !== 'suspended') return;
-    void ctx.resume();
+    void ctx.resume().catch(() => {});
   }
 
   function measureWaveBars(levelEl, toolbarEl) {
@@ -224,7 +224,9 @@ export function createMicWave() {
       smooth: 0,
     };
 
-    if (ctx.state !== 'running') void ctx.resume();
+    if (ctx.state !== 'running') {
+      void ctx.resume().catch(() => {});
+    }
   }
 
   function applyMicVoicePulse(levelEl, toolbarEl) {
