@@ -134,8 +134,8 @@ export async function listVoiceSampleBuffers(userId, slotNumber) {
 
 export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'audio/webm', durationMs = null) {
   const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  if (profile.samples.length >= MAX_VOICE_SAMPLES) {
+  const before = await getVoiceProfile(userId, slot);
+  if (before.samples.length >= MAX_VOICE_SAMPLES) {
     const err = new Error(`You already have ${MAX_VOICE_SAMPLES} samples`);
     err.code = 'SAMPLE_LIMIT';
     throw err;
@@ -144,6 +144,16 @@ export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'aud
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   await writeBuffer(sampleKey(userId, slot, id, ext), buffer, mimeType);
+
+  const profile = await getVoiceProfile(userId, slot);
+  if (profile.samples.some((entry) => entry.id === id)) {
+    return profile;
+  }
+  if (profile.samples.length >= MAX_VOICE_SAMPLES) {
+    const err = new Error(`You already have ${MAX_VOICE_SAMPLES} samples`);
+    err.code = 'SAMPLE_LIMIT';
+    throw err;
+  }
 
   const safeDurationMs = Number(durationMs);
   profile.samples.push({

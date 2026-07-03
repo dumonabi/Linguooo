@@ -9,7 +9,7 @@ import {
 } from './profile-slots.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { getRecordingMimeType } from './media-utils.js';
+import { getRecordingMimeType, waitForRecorderStop } from './media-utils.js';
 import { formatCloneVoiceLanguageGroups } from './elevenlabs-languages.js';
 import {
   getProfileMenuSelectionStorageKey,
@@ -148,6 +148,9 @@ function ensureProfileUserMenuSelection(sessionUserId) {
   }
   if (!profileUserMenuSelection || !slotNumbers.includes(profileUserMenuSelection)) {
     profileUserMenuSelection = slotNumbers[0] ?? loadActiveProfileSlot(sessionUserId) ?? null;
+    if (profileUserMenuSelection) {
+      saveProfileUserMenuSelection(sessionUserId, profileUserMenuSelection);
+    }
   }
   return profileUserMenuSelection;
 }
@@ -718,6 +721,9 @@ function setVoiceSamplesPageOpen(open) {
   const page = $('#user-profile-voice-samples-page', rootEl);
   if (page) page.hidden = !open;
   if (open) {
+    const user = getStoredUser();
+    const slot = getCurrentProfileSlot();
+    if (user?.id && slot) saveProfileUserMenuSelection(user.id, slot);
     window.dispatchEvent(new CustomEvent('lingo:close-lang-pickers'));
     void renderVoiceSamplesPage();
   } else if (wasOpen && recordingSession) {
@@ -828,31 +834,6 @@ function teardownProfileRecordingWave() {
   stopProfileWaveLoop();
   profileMicWave.unobserveWaveResize();
   profileMicWave.teardownMicMeter();
-}
-
-function stopMediaRecorder(recorder) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Recording stop timed out — try again')), 8000);
-    const finish = (err) => {
-      clearTimeout(timer);
-      if (err) reject(err);
-      else resolve();
-    };
-
-    recorder.addEventListener('stop', () => finish(), { once: true });
-    recorder.addEventListener('error', () => finish(new Error('Recording failed')), { once: true });
-
-    if (recorder.state === 'recording') {
-      try {
-        recorder.requestData();
-      } catch {
-        // not supported in every browser
-      }
-      recorder.stop();
-    } else if (recorder.state === 'inactive') {
-      finish();
-    }
-  });
 }
 
 async function maybeEnsureVoiceConfigured() {
@@ -1412,14 +1393,18 @@ async function fetchCurrentUserForSlot(slot) {
 
 export async function refreshUserSession() {
   const user = getStoredUser();
+  const sessionSlot = getCurrentProfileSlot() ?? loadActiveProfileSlot(user?.id);
   if (user?.id) {
     await hydrateProfileFromServer(user.id);
   }
-  const slot = getCurrentProfileSlot() ?? loadActiveProfileSlot(user?.id);
+  const slot = sessionSlot ?? loadActiveProfileSlot(user?.id);
   const data = slot ? await fetchCurrentUserForSlot(slot) : await fetchCurrentUser();
   if (data?.user) {
     setStoredUser(applyDisplayName(data.user));
-    profileUserMenuSelection = loadProfileUserMenuSelection(data.user.id) ?? slot;
+    profileUserMenuSelection = slot ?? loadProfileUserMenuSelection(data.user.id) ?? 1;
+    if (profileUserMenuSelection) {
+      saveProfileUserMenuSelection(data.user.id, profileUserMenuSelection);
+    }
     voiceProfile = data.voiceProfile ? {
       ...data.voiceProfile,
       samples: data.voiceProfile.samples || [],
@@ -1490,6 +1475,8 @@ async function stopVoiceSampleRecording() {
   if (!session || savingSample) return;
 
   const user = getStoredUser();
+  const slot = getCurrentProfileSlot();
+  if (user?.id && slot) saveProfileUserMenuSelection(user.id, slot);
   const state = getProfileState(user);
   if (!state.canRecordMore) {
     cancelVoiceSampleRecording();
@@ -1501,7 +1488,7 @@ async function stopVoiceSampleRecording() {
   renderMenuContent();
 
   try {
-    await stopMediaRecorder(session.recorder);
+    await waitForRecorderStop(session.recorder);
     teardownProfileRecordingWave();
     session.stream.getTracks().forEach((track) => track.stop());
     recordingSession = null;
@@ -1522,7 +1509,7 @@ async function stopVoiceSampleRecording() {
     form.append('audio', blob, `voice-sample.${session.mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
     form.append('durationMs', String(durationMs));
 
-    const res = await apiFetch(voiceApiPath('/api/voice/samples', getCurrentProfileSlot()), {
+    const res = await apiFetch(voiceApiPath('/api/voice/samples', slot), {
       method: 'POST',
       body: form,
     });
@@ -1531,6 +1518,18 @@ async function stopVoiceSampleRecording() {
       toast(data.error || 'Could not save voice sample');
       renderMenuContent();
       return;
+    }
+
+    if (voiceProfile && Number.isFinite(data.sampleCount)) {
+      voiceProfile = {
+        ...voiceProfile,
+        sampleCount: data.sampleCount,
+        canRecordMore: data.canRecordMore ?? data.sampleCount < (voiceProfile.maxSamples ?? MIN_SAMPLES),
+        status: data.status ?? voiceProfile.status,
+        samplesComplete: data.sampleCount >= (voiceProfile.maxSamples ?? MIN_SAMPLES),
+      };
+      syncStoredUserVoiceState();
+      renderMenuContent();
     }
 
     toast('Voice sample saved');
