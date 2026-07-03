@@ -53,6 +53,7 @@ import {
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
 import { createSessionToken } from './session-token.js';
+import { isPersistentBlobEnabled } from './persistent-store.js';
 import {
   alignTranslationFields,
   detectLanguageFromTranslation,
@@ -433,6 +434,7 @@ export function createApp() {
     res.set('Cache-Control', 'no-store');
     res.json({
       ok: true,
+      persistentBlob: isPersistentBlobEnabled(),
       authRequired: isAuthRequired(),
       cloneVoiceLanguages: listCloneVoiceLanguageCodes(),
       cloneVoiceLanguagesByModel: cloneVoiceLanguagesByModel(),
