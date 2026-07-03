@@ -4,13 +4,13 @@ import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { getRecordingMimeType } from './media-utils.js';
-import { apiFetch, clearAuthToken, fetchCurrentUser, getAuthToken, getStoredUser, initAuthStorage, persistKey, readPersistedValue, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
+import { getRecordingMimeType, sleep } from './media-utils.js';
+import { apiFetch, clearAuthToken, getAuthToken, getStoredUser, initAuthStorage, persistKey, readPersistedValue, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
 import { mountAuthGate, openAuthGate, resetAuthGate } from './auth-gate.js';
 import { initUserProfile, refreshUserSession } from './user-profile.js';
-import { hydrateProfileFromServer } from './profile-sync.js';
 import { loadActiveProfileSlot } from './profile-active-slot.js';
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
+import { OFFLINE_LANGUAGES, isFullLanguageList, loadLanguagesList } from './languages-service.js';
 import {
   clearAllPendingRecordings,
   isRetryableSendError,
@@ -28,18 +28,6 @@ const STORAGE_KEY = 'lingo-languages';
 const DEFAULT_LANG1 = 'en';
 const DEFAULT_LANG2 = 'es';
 
-const OFFLINE_LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'th', name: 'Thai' },
-  { code: 'zh', name: 'Chinese' },
-  { code: 'fr', name: 'French' },
-  { code: 'de', name: 'German' },
-  { code: 'ja', name: 'Japanese' },
-  { code: 'ar', name: 'Arabic' },
-  { code: 'pt', name: 'Portuguese' },
-  { code: 'it', name: 'Italian' },
-];
 const MAX_RECORDING_MS = 90_000;
 const RECORDING_TAIL_MS = 150;
 const RECORDER_STOP_FLUSH_MS = 150;
@@ -801,10 +789,6 @@ async function ensureAuthenticated() {
   const user = await restoreSessionIfPossible();
   if (user) {
     state.user = user;
-    await hydrateProfileFromServer(user.id);
-    void fetchCurrentUser(loadActiveProfileSlot(user?.id)).then((data) => {
-      if (data?.user) state.user = data.user;
-    }).catch(() => {});
     return true;
   }
 
@@ -861,13 +845,7 @@ function showAuthGate() {
 }
 
 async function loadLanguages() {
-  try {
-    const res = await apiFetch('/api/languages');
-    if (!res.ok) throw new Error('Failed to load languages');
-    state.languages = await res.json();
-  } catch {
-    state.languages = [...OFFLINE_LANGUAGES];
-  }
+  state.languages = await loadLanguagesList();
   syncPickerLanguages();
 }
 
@@ -960,22 +938,16 @@ function restoreSavedLanguages() {
 }
 
 async function ensureLanguagesLoaded() {
-  if (state.languages.length > OFFLINE_LANGUAGES.length) {
+  if (isFullLanguageList(state.languages)) {
     syncPickerLanguages();
     return;
   }
 
-  try {
-    const res = await apiFetch('/api/languages');
-    if (!res.ok) return;
-    state.languages = await res.json();
-    syncPickerLanguages();
-    restoreSavedLanguages();
-    picker1?.setValue(state.lang1);
-    picker2?.setValue(state.lang2);
-  } catch {
-    // offline fallback stays in place
-  }
+  state.languages = await loadLanguagesList();
+  syncPickerLanguages();
+  restoreSavedLanguages();
+  picker1?.setValue(state.lang1);
+  picker2?.setValue(state.lang2);
 }
 
 function syncPickerLanguages() {
@@ -2091,10 +2063,6 @@ async function consumeConverseStream(res, { requestId, signal, mode = 'active', 
   }
 
   return finalData;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchConverse(formFactory, { attempts = 3, signal, timeoutMs = 120000 } = {}) {

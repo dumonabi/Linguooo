@@ -33,6 +33,12 @@ export async function waitForRecorderStop(mediaRecorder) {
     mediaRecorder.addEventListener('stop', finish, { once: true });
     mediaRecorder.addEventListener('error', () => finish(), { once: true });
 
+    const previousOnStop = mediaRecorder.onstop;
+    mediaRecorder.onstop = (event) => {
+      if (typeof previousOnStop === 'function') previousOnStop.call(mediaRecorder, event);
+      finish();
+    };
+
     try {
       if (mediaRecorder.state === 'recording' && typeof mediaRecorder.requestData === 'function') {
         mediaRecorder.requestData();

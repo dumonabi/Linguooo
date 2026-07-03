@@ -86,8 +86,3 @@ export function formatCloneVoiceLanguageGroups(locale = 'en') {
     v3: formatLanguageCodeList(listCloneVoiceV3LanguageCodes(), locale),
   };
 }
-
-/** @deprecated Use formatCloneVoiceLanguageGroups */
-export function formatCloneVoiceLanguageList(locale = 'en') {
-  return formatLanguageCodeList(listCloneVoiceLanguageCodes(), locale);
-}

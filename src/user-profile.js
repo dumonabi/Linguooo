@@ -11,15 +11,16 @@ import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
 import { buildRecordingBlob, getRecordingMimeType, isIosDevice } from './media-utils.js';
 import { formatCloneVoiceLanguageGroups } from './elevenlabs-languages.js';
+import { loadLanguagesList } from './languages-service.js';
 import {
   getProfileMenuSelectionStorageKey,
   loadActiveProfileSlot,
   voiceApiPath,
 } from './profile-active-slot.js';
+import { getSlotNameStorageKey, getVoiceLangStorageKey, VOICE_LANG_PREFIX } from './profile-keys.js';
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
 import {
   hydrateProfileFromServer,
-  pushProfileSettingsToServer,
   scheduleProfileSettingsSync,
 } from './profile-sync.js';
 import {
@@ -31,7 +32,6 @@ import {
   VOICE_SAMPLE_TARGET,
 } from './voice-prompts.js';
 
-const SLOT_NAME_PREFIX = 'lingo-profile-slot-name:';
 const MAX_SLOT_NAME_CHARS = 8;
 const MAX_SLOT_LABEL_CHARS = 8;
 
@@ -73,10 +73,6 @@ function saveProfileUserMenuSelection(userId, number) {
   }
 }
 
-function getSlotNameStorageKey(sessionUserId, slotNumber) {
-  return `${SLOT_NAME_PREFIX}${sessionUserId}:${slotNumber}`;
-}
-
 function loadProfileSlotName(sessionUserId, slotNumber) {
   if (!sessionUserId || !slotNumber) return '';
   try {
@@ -94,7 +90,6 @@ function saveProfileSlotName(sessionUserId, slotNumber, name) {
       String(name || '').trim().slice(0, MAX_SLOT_NAME_CHARS),
     );
     scheduleProfileSettingsSync();
-    void pushProfileSettingsToServer(sessionUserId);
   } catch {
     // ignore storage errors
   }
@@ -378,22 +373,6 @@ const PROFILE_COPY_ICON_SVG = `
 `;
 
 const SUPER_USER_ID = 'u-super';
-const VOICE_LANG_PREFIX = 'lingo-voice-lang:';
-
-const PROFILE_OFFLINE_LANGUAGES = [
-  { code: 'en', name: 'English' },
-  { code: 'es', name: 'Spanish' },
-  { code: 'th', name: 'Thai' },
-  { code: 'zh', name: 'Chinese' },
-  { code: 'fr', name: 'French' },
-  { code: 'de', name: 'German' },
-  { code: 'ja', name: 'Japanese' },
-  { code: 'ar', name: 'Arabic' },
-  { code: 'pt', name: 'Portuguese' },
-  { code: 'it', name: 'Italian' },
-];
-
-const PROFILE_VOICE_LANGUAGES = PROFILE_OFFLINE_LANGUAGES;
 
 let rootEl = null;
 let menuOpen = false;
@@ -490,10 +469,6 @@ export function getActiveProfileSlotNumber() {
   return getCurrentProfileSlot();
 }
 
-function getVoiceLangStorageKey(userId, slotNumber) {
-  return `${VOICE_LANG_PREFIX}${userId}:${slotNumber}`;
-}
-
 function loadVoiceLangPrefs(user, slotNumber = getCurrentProfileSlot()) {
   if (!user || !slotNumber) return;
   try {
@@ -534,13 +509,7 @@ function updateVoicePromptText() {
 
 async function ensureProfileLanguages() {
   if (profileLanguages.length) return profileLanguages;
-  try {
-    const res = await apiFetch('/api/languages');
-    if (!res.ok) throw new Error('Failed to load languages');
-    profileLanguages = await res.json();
-  } catch {
-    profileLanguages = [...PROFILE_OFFLINE_LANGUAGES];
-  }
+  profileLanguages = await loadLanguagesList();
   return profileLanguages;
 }
 
@@ -1394,15 +1363,6 @@ async function refreshVoiceProfile(slotNumber = getCurrentProfileSlot()) {
   await maybeEnsureVoiceConfigured();
 }
 
-async function fetchCurrentUserForSlot(slot) {
-  const res = await apiFetch(voiceApiPath('/api/me', slot));
-  if (!res.ok) return null;
-  const data = await res.json().catch(() => ({}));
-  if (!data.user) return null;
-  setStoredUser(data.user);
-  return data;
-}
-
 export async function refreshUserSession() {
   const user = getStoredUser();
   const sessionSlot = getCurrentProfileSlot() ?? loadActiveProfileSlot(user?.id);
@@ -1410,7 +1370,7 @@ export async function refreshUserSession() {
     await hydrateProfileFromServer(user.id);
   }
   const slot = sessionSlot ?? loadActiveProfileSlot(user?.id);
-  const data = slot ? await fetchCurrentUserForSlot(slot) : await fetchCurrentUser();
+  const data = slot ? await fetchCurrentUser(slot) : await fetchCurrentUser();
   if (data?.user) {
     setStoredUser(applyDisplayName(data.user));
     profileUserMenuSelection = slot ?? loadProfileUserMenuSelection(data.user.id) ?? 1;

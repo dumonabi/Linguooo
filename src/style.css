@@ -3752,22 +3752,6 @@ html.user-profile-menu-open body {
   padding: 0;
 }
 
-.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel,
-.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level,
-.user-profile-voice-samples-page .user-profile-recording-toolbar .user-profile-recording-accept {
-  display: flex;
-}
-
-.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.38);
-}
-
-.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level-bar {
-  background: #ffffff;
-}
-
 .user-profile-voice-samples-page .user-profile-recording-accept {
   color: var(--accent-light);
   background: rgba(42, 235, 108, 0.12);
@@ -4187,7 +4171,10 @@ html.user-profile-menu-open body {
 .user-profile-recording-toolbar .compose-recording-cancel,
 .user-profile-recording-toolbar .compose-level,
 .user-profile-recording-toolbar .user-profile-record-mic,
-.user-profile-recording-toolbar .user-profile-recording-accept {
+.user-profile-recording-toolbar .user-profile-recording-accept,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .user-profile-recording-accept {
   display: flex;
 }
 
@@ -4196,13 +4183,15 @@ html.user-profile-menu-open body {
   justify-content: stretch;
 }
 
-.user-profile-panel .user-profile-recording-toolbar .compose-recording-cancel {
+.user-profile-panel .user-profile-recording-toolbar .compose-recording-cancel,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-recording-cancel {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.38);
 }
 
-.user-profile-panel .user-profile-recording-toolbar .compose-level-bar {
+.user-profile-panel .user-profile-recording-toolbar .compose-level-bar,
+.user-profile-voice-samples-page .user-profile-recording-toolbar .compose-level-bar {
   background: #ffffff;
 }
 

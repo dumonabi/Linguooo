@@ -9,9 +9,11 @@ import {
   saveProfileSlotNumbers,
 } from './profile-slots.js';
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
+import {
+  getSlotNameStorageKey,
+  getVoiceLangStorageKey,
+} from './profile-keys.js';
 
-const SLOT_NAME_PREFIX = 'lingo-profile-slot-name:';
-const VOICE_LANG_PREFIX = 'lingo-voice-lang:';
 const MAX_SLOT_NAME_CHARS = 8;
 
 let syncTimer = null;
@@ -31,10 +33,10 @@ function collectLocalProfileSettings(userId) {
   const voiceLangBySlot = {};
 
   for (const slot of slots) {
-    const name = readProfileValue(`${SLOT_NAME_PREFIX}${userId}:${slot}`)?.trim();
+    const name = readProfileValue(getSlotNameStorageKey(userId, slot))?.trim();
     if (name) slotNames[String(slot)] = name.slice(0, MAX_SLOT_NAME_CHARS);
 
-    const lang = readProfileValue(`${VOICE_LANG_PREFIX}${userId}:${slot}`)?.trim();
+    const lang = readProfileValue(getVoiceLangStorageKey(userId, slot))?.trim();
     if (lang) voiceLangBySlot[String(slot)] = lang;
   }
 
@@ -93,7 +95,7 @@ function applyProfileSettingsLocally(userId, settings) {
 
   for (const [slot, name] of Object.entries(settings.slotNames || {})) {
     writeProfileValue(
-      `${SLOT_NAME_PREFIX}${userId}:${slot}`,
+      getSlotNameStorageKey(userId, slot),
       String(name || '').trim().slice(0, MAX_SLOT_NAME_CHARS),
     );
   }
@@ -101,7 +103,7 @@ function applyProfileSettingsLocally(userId, settings) {
   for (const [slot, lang] of Object.entries(settings.voiceLangBySlot || {})) {
     const normalized = String(lang || '').trim().toLowerCase();
     if (normalized) {
-      writeProfileValue(`${VOICE_LANG_PREFIX}${userId}:${slot}`, normalized);
+      writeProfileValue(getVoiceLangStorageKey(userId, slot), normalized);
     }
   }
 
