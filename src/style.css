@@ -14,14 +14,17 @@
   --accent-glow: rgba(34, 197, 94, 0.35);
   --radius: 16px;
   --font: 'DM Sans', system-ui, sans-serif;
-  --compose-action-size: calc(100vw / 6);
-  --compose-action-icon: calc(100vw / 6);
-  --page-button-height: calc(100vw / 4);
-  --page-symbol-size: calc(100vw / 6);
+  /* Portrait-first unit: full width in tall views; capped at 4/5 of viewport height when wider */
+  --layout-ref: min(100vw, 80dvh);
+  --compose-action-size: calc(var(--layout-ref) / 6);
+  --compose-action-icon: calc(var(--layout-ref) / 6);
+  --page-button-height: calc(var(--layout-ref) / 4);
+  --page-symbol-size: calc(var(--layout-ref) / 6);
   --lang-bar-gap: 2px;
   --lang-bar-pad: 0.8rem;
   --lang-bar-rect-height: var(--page-button-height);
-  --lang-bar-slot-width: calc((100vw - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  --lang-bar-third: calc((var(--layout-ref) - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  --lang-bar-slot-width: var(--lang-bar-third);
   --ui-text-size: min(
     calc(var(--lang-bar-rect-height) * 0.62),
     calc(var(--lang-bar-slot-width) / 5.35)
@@ -57,9 +60,10 @@ html.user-profile-menu-open body {
 }
 
 #app {
-  max-width: 720px;
+  width: 100%;
+  max-width: var(--layout-ref);
   margin: 0 auto;
-  padding: max(0.5rem, env(safe-area-inset-top)) 1rem max(1.25rem, env(safe-area-inset-bottom));
+  padding: max(0.5rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right)) max(1.25rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -87,9 +91,10 @@ html.user-profile-menu-open body {
   --lang-circle-pad: var(--lang-bar-pad);
   --lang-circle-slot: var(--page-button-height);
   --lang-bar-text-size: var(--ui-text-size);
-  width: 100vw;
-  max-width: 100vw;
-  margin-left: calc(50% - 50vw);
+  width: 100%;
+  max-width: 100%;
+  margin-left: 0;
+  margin-right: 0;
   padding-left: max(var(--lang-bar-pad), env(safe-area-inset-left));
   padding-right: max(var(--lang-bar-pad), env(safe-area-inset-right));
   box-sizing: border-box;
@@ -2349,6 +2354,7 @@ html.user-profile-menu-open body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  align-items: center;
 }
 
 .user-profile-layout {
@@ -2356,6 +2362,7 @@ html.user-profile-menu-open body {
   flex-direction: column;
   flex: 1 1 auto;
   width: 100%;
+  max-width: var(--layout-ref);
   min-height: 100%;
 }
 
@@ -3175,7 +3182,7 @@ html.user-profile-menu-open body {
   max-height: 100dvh;
   --lang-circle-gap: 0.8rem;
   --lang-circle-pad: 0.8rem;
-  --lang-circle-slot: calc((100vw - 2 * var(--lang-circle-pad) - 3 * var(--lang-circle-gap)) / 4);
+  --lang-circle-slot: calc((var(--layout-ref) - 2 * var(--lang-circle-pad) - 3 * var(--lang-circle-gap)) / 4);
   --user-profile-paint-circle-size: min(
     calc(3 * var(--lang-circle-slot) + 2 * var(--lang-circle-gap)),
     48dvh
@@ -3228,6 +3235,7 @@ html.user-profile-menu-open body {
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  align-items: center;
 }
 
 .user-profile-voice-samples-page[hidden] {
@@ -3242,7 +3250,7 @@ html.user-profile-menu-open body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: calc((100vw - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  width: var(--lang-bar-third);
   max-width: calc((100% - 2 * var(--lang-bar-gap)) / 3);
   height: var(--lang-bar-rect-height);
   margin: 0;
@@ -3272,6 +3280,8 @@ html.user-profile-menu-open body {
   display: flex;
   flex-direction: column;
   flex: 1 0 auto;
+  width: 100%;
+  max-width: var(--layout-ref);
   min-height: min(100%, calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.75rem, env(safe-area-inset-bottom))));
 }
 
@@ -3294,7 +3304,7 @@ html.user-profile-menu-open body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: calc((100vw - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  width: var(--lang-bar-third);
   max-width: calc((100% - 2 * var(--lang-bar-gap)) / 3);
   height: var(--lang-bar-rect-height);
   min-height: var(--lang-bar-rect-height);
@@ -3325,8 +3335,8 @@ html.user-profile-menu-open body {
 }
 
 .user-profile-voice-samples-page .user-profile-samples-progress-count-row .user-profile-speak-audio-icon {
-  width: calc(100vw / 12);
-  height: calc(100vw / 12);
+  width: calc(var(--layout-ref) / 12);
+  height: calc(var(--layout-ref) / 12);
   flex-shrink: 0;
   display: block;
   color: #e8fff0;
@@ -3339,7 +3349,7 @@ html.user-profile-menu-open body {
 }
 
 .user-profile-voice-lang-wrap {
-  width: calc((100vw - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  width: var(--lang-bar-third);
   max-width: calc((100% - 2 * var(--lang-bar-gap)) / 3);
   min-width: 0;
   height: var(--lang-bar-rect-height);
@@ -3707,10 +3717,10 @@ html.user-profile-menu-open body {
   flex: 0 0 auto;
   margin-top: 0;
   margin-bottom: 0.85rem;
-  width: 100vw;
-  max-width: 100vw;
-  margin-left: calc(50% - 50vw);
-  margin-right: calc(50% - 50vw);
+  width: 100%;
+  max-width: 100%;
+  margin-left: 0;
+  margin-right: 0;
   padding-inline:
     max(0.8rem, env(safe-area-inset-left))
     max(0.8rem, env(safe-area-inset-right));
@@ -3820,7 +3830,7 @@ html.user-profile-menu-open body {
 }
 
 .user-profile-mic-slot {
-  width: calc((100vw - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
+  width: var(--lang-bar-third);
   max-width: calc((100% - 2 * var(--lang-bar-gap)) / 3);
   height: var(--lang-bar-rect-height);
   min-height: var(--lang-bar-rect-height);
