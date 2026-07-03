@@ -1,3 +1,9 @@
+import {
+  ELEVEN_MODEL_V2,
+  resolveCloneVoiceModel,
+  toElevenLabsLanguageCode,
+} from './elevenlabs-languages.js';
+
 const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1';
 
 export function getElevenLabsApiKey() {
@@ -54,7 +60,13 @@ export async function createVoiceClone({ name, description, samples }) {
   return data.voice_id;
 }
 
-export async function generateClonedSpeech(text, voiceId) {
+function resolveSpeechModelId(langCode) {
+  const override = process.env.ELEVENLABS_MODEL_ID?.trim();
+  if (override) return override;
+  return resolveCloneVoiceModel(langCode) || ELEVEN_MODEL_V2;
+}
+
+export async function generateClonedSpeech(text, voiceId, langCode = null) {
   const apiKey = getElevenLabsApiKey();
   if (!apiKey) {
     throw new Error('ElevenLabs API key not configured');
@@ -63,22 +75,30 @@ export async function generateClonedSpeech(text, voiceId) {
     throw new Error('Voice profile not ready');
   }
 
+  const modelId = resolveSpeechModelId(langCode);
+  const payload = {
+    text,
+    model_id: modelId,
+    voice_settings: {
+      stability: 0.45,
+      similarity_boost: 0.8,
+      style: 0.15,
+      use_speaker_boost: true,
+    },
+  };
+
+  const elevenLang = toElevenLabsLanguageCode(langCode);
+  if (modelId === 'eleven_v3' && elevenLang) {
+    payload.language_code = elevenLang;
+  }
+
   const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}`, {
     method: 'POST',
     headers: authHeaders({
       'Content-Type': 'application/json',
       Accept: 'audio/mpeg',
     }),
-    body: JSON.stringify({
-      text,
-      model_id: process.env.ELEVENLABS_MODEL_ID?.trim() || 'eleven_multilingual_v2',
-      voice_settings: {
-        stability: 0.45,
-        similarity_boost: 0.8,
-        style: 0.15,
-        use_speaker_boost: true,
-      },
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!res.ok) {

@@ -2,25 +2,72 @@ export const CARET_TYPING_IDLE_MS = 700;
 
 export function measureCharCell(mirror, style) {
   const probe = document.createElement('span');
-  probe.textContent = 'M';
+  probe.textContent = 'Mg';
   probe.setAttribute('aria-hidden', 'true');
   mirror.append(probe);
   const rect = probe.getBoundingClientRect();
   probe.remove();
 
-  const lineHeight = parseFloat(style.lineHeight) || rect.height || parseFloat(style.fontSize) * 1.45;
-  const charWidth = rect.width || parseFloat(style.fontSize) * 0.58;
+  const fontSize = parseFloat(style.fontSize) || 16;
+  const computedLineHeight = parseFloat(style.lineHeight);
+  const lineHeight = Math.max(
+    Number.isFinite(computedLineHeight) ? computedLineHeight : 0,
+    rect.height,
+    fontSize * 1.12,
+  );
+  const charWidth = rect.width / 2 || fontSize * 0.58;
 
-  return { charWidth, lineHeight };
+  return { charWidth, lineHeight, fontSize };
 }
 
-export function positionBlockCaret(caret, { left, top, charWidth, lineHeight }) {
-  const blockHeight = Math.max(lineHeight * 0.88, 12);
+export function measureCompactCharCell(mirror, style) {
+  const fontSize = parseFloat(style.fontSize) || 16;
+  const previousLineHeight = mirror.style.lineHeight;
+  mirror.style.lineHeight = '1.12';
+
+  const probe = document.createElement('span');
+  probe.textContent = 'Mg';
+  probe.setAttribute('aria-hidden', 'true');
+  mirror.append(probe);
+  const rect = probe.getBoundingClientRect();
+  probe.remove();
+
+  mirror.style.lineHeight = previousLineHeight;
+
+  const lineHeight = Math.max(rect.height, fontSize * 1.12);
+  const charWidth = rect.width / 2 || fontSize * 0.58;
+
+  return { charWidth, lineHeight, fontSize };
+}
+
+export function positionBlockCaret(caret, { left, top, charWidth, lineHeight, markerHeight }) {
+  const blockHeight = Math.max(markerHeight ?? 0, lineHeight, 12);
   const blockWidth = charWidth * 0.75;
-  const insetY = Math.max(0, (lineHeight - blockHeight) / 2);
 
   caret.style.left = `${left}px`;
-  caret.style.top = `${top + insetY}px`;
+  caret.style.top = `${top}px`;
+  caret.style.width = `${blockWidth}px`;
+  caret.style.height = `${blockHeight}px`;
+}
+
+export function positionCompactCaret(caret, {
+  left,
+  fieldTop,
+  inputTop,
+  inputHeight,
+  charWidth,
+  lineHeight,
+  fontSize,
+}) {
+  const blockHeight = Math.min(
+    Math.max(lineHeight, fontSize * 1.05, 10),
+    inputHeight * 0.92,
+  );
+  const blockWidth = Math.max(charWidth * 0.92, fontSize * 0.14, 3);
+  const top = inputTop - fieldTop + (inputHeight - blockHeight) / 2;
+
+  caret.style.left = `${left}px`;
+  caret.style.top = `${top}px`;
   caret.style.width = `${blockWidth}px`;
   caret.style.height = `${blockHeight}px`;
 }

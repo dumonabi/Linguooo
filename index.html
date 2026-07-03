@@ -21,12 +21,10 @@
   <body>
     <div id="app">
       <section class="language-bar">
-        <div class="language-bar-row">
-          <div class="language-bar-langs">
-            <div id="lang-picker-1" class="lang-picker-slot lang-bar-circle-slot"></div>
-            <div id="lang-picker-2" class="lang-picker-slot lang-bar-circle-slot"></div>
-          </div>
-          <div class="user-profile-slot lang-bar-circle-slot" id="user-profile-slot"></div>
+        <div class="language-bar-row language-bar-row--three">
+          <div id="lang-picker-1" class="lang-picker-slot lang-bar-rect-slot"></div>
+          <div id="lang-picker-2" class="lang-picker-slot lang-bar-rect-slot"></div>
+          <div class="user-profile-slot lang-bar-rect-slot" id="user-profile-slot"></div>
         </div>
       </section>
 
@@ -182,8 +180,14 @@
         <div id="auth-recovery-reveal" hidden>
           <h2>Save your phrase</h2>
           <p class="auth-hint">Write these 12 words down. We cannot show them again on a new device unless you saved them here.</p>
-          <p class="auth-mnemonic" id="auth-mnemonic-text"></p>
-          <button type="button" class="auth-secondary" id="auth-copy-mnemonic">Copy phrase</button>
+          <div class="auth-mnemonic-block">
+            <p class="auth-mnemonic" id="auth-mnemonic-text"></p>
+            <button type="button" class="auth-copy-mnemonic" id="auth-copy-mnemonic" aria-label="Copy phrase" title="Copy phrase">
+              <svg class="auth-copy-mnemonic-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+            </button>
+          </div>
           <label class="auth-confirm-saved">
             <input type="checkbox" id="auth-saved-checkbox" />
             <span>I have saved my recovery phrase</span>

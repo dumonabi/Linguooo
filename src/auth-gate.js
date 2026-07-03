@@ -101,10 +101,8 @@ export function mountAuthGate({
     if (!phrase) return;
     try {
       await navigator.clipboard.writeText(phrase);
-      copyBtn.textContent = 'Copied';
-      window.setTimeout(() => {
-        copyBtn.textContent = 'Copy phrase';
-      }, 1600);
+      copyBtn.classList.add('is-action-ack');
+      window.setTimeout(() => copyBtn.classList.remove('is-action-ack'), 360);
     } catch {
       showError(errorEl, 'Could not copy — select and copy manually');
     }

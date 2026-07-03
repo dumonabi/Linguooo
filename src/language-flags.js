@@ -94,128 +94,32 @@ const LANGUAGE_FLAG_COUNTRIES = {
   // No flag: ca, eu, br, la, bo, cy, yi, haw, oc
 };
 
-// UI labels — max 5 characters (4 letters + "." when abbreviated).
-const LANGUAGE_SHORT_NAMES = {
-  af: 'Afri',
-  sq: 'Alba',
-  am: 'Amha',
-  ar: 'Arab',
-  hy: 'Arme',
-  as: 'Assa',
-  az: 'Azer',
-  eu: 'Basq',
-  be: 'Bela',
-  bn: 'Beng',
-  bs: 'Bosn',
-  br: 'Bret',
-  bg: 'Bulg',
-  my: 'Burm',
-  ca: 'Cata',
-  zh: 'Chin',
-  hr: 'Croa',
-  cs: 'Czec',
-  da: 'Dani',
-  nl: 'Dutc',
-  en: 'Engl',
-  et: 'Esto',
-  fo: 'Faro',
-  fi: 'Finn',
-  fr: 'Fren',
-  gl: 'Gali',
-  ka: 'Geor',
-  de: 'Germ',
-  el: 'Gree',
-  gu: 'Guja',
-  ht: 'Hait',
-  ha: 'Haus',
-  haw: 'Hawa',
-  he: 'Hebr',
-  hi: 'Hind',
-  hu: 'Hung',
-  is: 'Icel',
-  id: 'Indo',
-  it: 'Ital',
-  ja: 'Japa',
-  jw: 'Java',
-  kn: 'Kann',
-  kk: 'Kaza',
-  km: 'Khme',
-  ko: 'Kore',
-  lo: 'Lao',
-  la: 'Lati',
-  lv: 'Latv',
-  ln: 'Ling',
-  lt: 'Lith',
-  lb: 'Luxe',
-  mk: 'Mace',
-  mg: 'Malg',
-  ms: 'Mala',
-  ml: 'Maly',
-  mt: 'Malt',
-  mi: 'Maor',
-  mr: 'Mara',
-  mn: 'Mong',
-  ne: 'Nepa',
-  no: 'Norw',
-  nn: 'Nyno',
-  oc: 'Occi',
-  ps: 'Pash',
-  fa: 'Pers',
-  pl: 'Poli',
-  pt: 'Port',
-  pa: 'Punj',
-  ro: 'Roma',
-  ru: 'Russ',
-  sa: 'Sans',
-  sr: 'Serb',
-  sd: 'Sind',
-  si: 'Sinh',
-  sk: 'Slvk',
-  sl: 'Slvn',
-  so: 'Soma',
-  es: 'Span',
-  su: 'Sund',
-  sw: 'Swah',
-  sv: 'Swed',
-  tl: 'Taga',
-  tg: 'Taji',
-  ta: 'Tami',
-  tt: 'Tata',
-  te: 'Telu',
-  th: 'Thai',
-  bo: 'Tibe',
-  tr: 'Turk',
-  tk: 'Tkmn',
-  uk: 'Ukra',
-  ur: 'Urdu',
-  uz: 'Uzb',
-  vi: 'Viet',
-  cy: 'Wels',
-  yi: 'Yidd',
-  yo: 'Yoru',
-  ba: 'Bash',
-  sn: 'Shon',
-};
-
-const MAX_LABEL_CHARS = 5;
-const MAX_ABBREV_CHARS = 4;
+const MAX_LABEL_CHARS = 8;
+const MAX_ABBREV_CHARS = 7;
 
 export function getLanguageDisplayName(langCode, fullName = '') {
   const full = String(fullName || '').trim();
-  if (full.length > 0 && full.length <= MAX_LABEL_CHARS) {
+  if (!full) {
+    const code = String(langCode || '').trim();
+    return code ? code.toUpperCase() : '';
+  }
+
+  if (full.length <= MAX_LABEL_CHARS) {
     return full;
   }
 
-  const code = String(langCode || '').toLowerCase();
-  const stemSource = LANGUAGE_SHORT_NAMES[code] || full;
-  const stem = stemSource.slice(0, MAX_ABBREV_CHARS);
-  if (!stem) return '';
+  return `${full.slice(0, MAX_ABBREV_CHARS)}.`;
+}
 
-  if (full && stem.toLowerCase() === full.toLowerCase()) {
-    return stem;
-  }
+export function buildLanguageSquareHtml(langCode, fullName = '', { extraClass = '' } = {}) {
+  const label = getLanguageDisplayName(langCode, fullName) || '···';
+  const className = ['lang-picker-square', extraClass].filter(Boolean).join(' ');
 
-  return `${stem}.`;
+  return `
+    <span class="${className}">
+      <span class="lang-picker-square-label">${escapeHtmlText(label)}</span>
+    </span>
+  `.trim();
 }
 
 export function buildLanguageCircleHtml(langCode, fullName = '', { extraClass = '' } = {}) {

@@ -7,10 +7,11 @@ import {
   writeText,
 } from './persistent-store.js';
 
-const MAX_PROFILE_SLOT = 20;
+const MAX_PROFILE_SLOT = 11;
 const LEGACY_MIGRATION_SLOT = 1;
 
 const MAX_VOICE_SAMPLES = 6;
+const VOICE_TARGET_DURATION_MS = 90_000;
 
 function slotPrefix(userId, slotNumber) {
   return `voices/${userId}/slots/${slotNumber}`;
@@ -92,7 +93,11 @@ async function writeMeta(userId, slotNumber, meta) {
   await writeText(metaKey(userId, slotNumber), JSON.stringify(meta, null, 2));
 }
 
-export { MAX_VOICE_SAMPLES };
+export { MAX_VOICE_SAMPLES, VOICE_TARGET_DURATION_MS };
+
+function totalSampleDurationMs(samples) {
+  return samples.reduce((sum, sample) => sum + (Number(sample.durationMs) || 0), 0);
+}
 
 export async function getVoiceProfile(userId, slotNumber) {
   const slot = validateProfileSlot(slotNumber);
@@ -127,7 +132,7 @@ export async function listVoiceSampleBuffers(userId, slotNumber) {
   return { profile, buffers };
 }
 
-export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'audio/webm') {
+export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'audio/webm', durationMs = null) {
   const slot = validateProfileSlot(slotNumber);
   const profile = await getVoiceProfile(userId, slot);
   if (profile.samples.length >= MAX_VOICE_SAMPLES) {
@@ -140,11 +145,15 @@ export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'aud
 
   await writeBuffer(sampleKey(userId, slot, id, ext), buffer, mimeType);
 
+  const safeDurationMs = Number(durationMs);
   profile.samples.push({
     id,
     ext,
     mimeType,
     createdAt: Date.now(),
+    ...(Number.isFinite(safeDurationMs) && safeDurationMs > 0
+      ? { durationMs: Math.round(safeDurationMs) }
+      : {}),
   });
   profile.status = profile.elevenlabsVoiceId ? 'needs_update' : 'collecting';
 
@@ -217,6 +226,7 @@ export function resolveVoiceId(user, voiceProfile) {
 }
 
 export function voiceProfileSummary(voiceProfile) {
+  const totalDurationMs = totalSampleDurationMs(voiceProfile.samples);
   return {
     status: voiceProfile.status,
     sampleCount: voiceProfile.samples.length,
@@ -225,5 +235,7 @@ export function voiceProfileSummary(voiceProfile) {
     minSamples: MAX_VOICE_SAMPLES,
     maxSamples: MAX_VOICE_SAMPLES,
     canRecordMore: voiceProfile.samples.length < MAX_VOICE_SAMPLES,
+    totalDurationMs,
+    targetDurationMs: VOICE_TARGET_DURATION_MS,
   };
 }

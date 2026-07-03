@@ -4,6 +4,7 @@ import {
   readPersistedValue,
   removeKey,
 } from './auth-storage.js';
+import { voiceApiPath } from './profile-active-slot.js';
 
 export { initAuthStorage, persistKey, readPersistedValue };
 
@@ -183,8 +184,9 @@ export async function apiFetch(url, options = {}) {
   return res;
 }
 
-export async function fetchCurrentUser() {
-  const res = await apiFetch('/api/me');
+export async function fetchCurrentUser(slotNumber = null) {
+  const path = slotNumber ? voiceApiPath('/api/me', slotNumber) : '/api/me';
+  const res = await apiFetch(path);
   if (!res.ok) return null;
   const data = await res.json().catch(() => ({}));
   if (!data.user) return null;

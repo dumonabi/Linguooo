@@ -1,9 +1,24 @@
-// Languages supported well by ElevenLabs eleven_multilingual_v2 for cloned voices.
 // Keep in sync with server/elevenlabs-languages.js
-export const CLONED_VOICE_LANGUAGE_CODES = new Set([
+
+export const ELEVEN_MODEL_V2 = 'eleven_multilingual_v2';
+export const ELEVEN_MODEL_V3 = 'eleven_v3';
+
+export const CLONED_VOICE_V2_LANGUAGE_CODES = new Set([
   'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'hi', 'hr', 'id',
   'it', 'ja', 'ko', 'ms', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'ta', 'tl',
   'tr', 'uk', 'zh',
+]);
+
+export const CLONED_VOICE_V3_LANGUAGE_CODES = new Set([
+  'af', 'as', 'az', 'be', 'bn', 'bs', 'ca', 'cy', 'et', 'fa', 'gl', 'gu', 'ha',
+  'he', 'hu', 'hy', 'is', 'jw', 'kk', 'kn', 'lb', 'ln', 'lt', 'lv', 'mk', 'ml',
+  'mr', 'ne', 'no', 'pa', 'ps', 'sd', 'sl', 'so', 'sr', 'sw', 'te', 'th', 'ur',
+  'vi',
+]);
+
+export const CLONED_VOICE_LANGUAGE_CODES = new Set([
+  ...CLONED_VOICE_V2_LANGUAGE_CODES,
+  ...CLONED_VOICE_V3_LANGUAGE_CODES,
 ]);
 
 const APP_ALIASES = {
@@ -19,10 +34,24 @@ export function resolveCloneVoiceLanguage(code) {
   return mapped || null;
 }
 
-export function supportsClonedVoice(langCode) {
+export function resolveCloneVoiceModel(langCode) {
   const mapped = resolveCloneVoiceLanguage(langCode);
-  if (!mapped) return false;
-  return CLONED_VOICE_LANGUAGE_CODES.has(mapped);
+  if (!mapped) return null;
+  if (CLONED_VOICE_V2_LANGUAGE_CODES.has(mapped)) return ELEVEN_MODEL_V2;
+  if (CLONED_VOICE_V3_LANGUAGE_CODES.has(mapped)) return ELEVEN_MODEL_V3;
+  return null;
+}
+
+export function supportsClonedVoice(langCode) {
+  return Boolean(resolveCloneVoiceModel(langCode));
+}
+
+export function listCloneVoiceV2LanguageCodes() {
+  return [...CLONED_VOICE_V2_LANGUAGE_CODES].sort();
+}
+
+export function listCloneVoiceV3LanguageCodes() {
+  return [...CLONED_VOICE_V3_LANGUAGE_CODES].sort();
 }
 
 export function listCloneVoiceLanguageCodes() {
@@ -38,9 +67,9 @@ function getLanguageDisplayNames(locale) {
   }
 }
 
-export function formatCloneVoiceLanguageList(locale = 'en') {
+function formatLanguageCodeList(codes, locale = 'en') {
   const displayNames = getLanguageDisplayNames(locale);
-  return listCloneVoiceLanguageCodes()
+  return codes
     .map((code) => {
       try {
         return displayNames.of(code) || code;
@@ -49,4 +78,16 @@ export function formatCloneVoiceLanguageList(locale = 'en') {
       }
     })
     .join(', ');
+}
+
+export function formatCloneVoiceLanguageGroups(locale = 'en') {
+  return {
+    v2: formatLanguageCodeList(listCloneVoiceV2LanguageCodes(), locale),
+    v3: formatLanguageCodeList(listCloneVoiceV3LanguageCodes(), locale),
+  };
+}
+
+/** @deprecated Use formatCloneVoiceLanguageGroups */
+export function formatCloneVoiceLanguageList(locale = 'en') {
+  return formatLanguageCodeList(listCloneVoiceLanguageCodes(), locale);
 }

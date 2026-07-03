@@ -24,6 +24,10 @@ import {
   getGuestUser,
   publicUserProfile,
 } from './users.js';
+import {
+  getProfileSettings,
+  saveProfileSettings,
+} from './profile-settings-store.js';
 import { ensureUserRegistryLoaded } from './user-store.js';
 import {
   addVoiceSample,
@@ -44,10 +48,16 @@ import {
   isElevenLabsConfigured,
 } from './elevenlabs.js';
 import {
+  cloneVoiceLanguagesByModel,
   listCloneVoiceLanguageCodes,
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
 import { createSessionToken } from './session-token.js';
+import {
+  alignTranslationFields,
+  detectLanguageFromTranslation,
+  detectLanguageInPair,
+} from './language-detection.js';
 
 dotenv.config();
 
@@ -78,7 +88,7 @@ function buildStreamingSystemPrompt(lang1, lang2) {
 
 function buildTranslationUserMessage(text, lang1, lang2, context, detected) {
   const trimmed = text.trim();
-  const inferred = detected ?? inferDetectedFromText(trimmed, lang1, lang2);
+  const inferred = detected ?? detectLanguageInPair(trimmed, lang1, lang2);
   const name1 = LANGUAGE_NAMES[lang1] || lang1;
   const name2 = LANGUAGE_NAMES[lang2] || lang2;
 
@@ -101,33 +111,20 @@ function buildTranslationUserMessage(text, lang1, lang2, context, detected) {
   return recentContext ? `${recentContext}\n\n${directive}` : directive;
 }
 
-function finalizeTranslation(rawText, translatedText, lang1, lang2, gptDetected = null, gptTarget = null) {
-  let detected = normalizeLangCode(gptDetected, lang1, lang2)
-    || inferDetectedFromText(rawText, lang1, lang2);
-
+function finalizeTranslation(rawText, translatedText, lang1, lang2, preDetected = null, gptTarget = null) {
   const sourceText = stripTrailingPeriod(rawText.trim());
   let translated = stripTrailingPeriod(translatedText || '');
 
-  const provisionalTarget = detected
-    ? (detected === lang1 ? lang2 : lang1)
-    : lang2;
-  const aligned = alignTranslationFields(
-    sourceText,
-    translated,
-    detected || lang1,
-    provisionalTarget,
-  );
+  const aligned = alignTranslationFields(sourceText, translated, lang1, lang2);
   translated = aligned.translatedText === sourceText && aligned.sourceText !== sourceText
     ? aligned.sourceText
     : aligned.translatedText;
 
-  if (!detected) {
-    detected = inferDetectedFromTranslation(aligned.sourceText, translated, lang1, lang2);
-  }
-  if (!detected) {
-    detected = normalizeLangCode(gptTarget, lang1, lang2) || lang1;
-  }
-  const target = detected === lang1 ? lang2 : lang1;
+  const detected = detectLanguageInPair(aligned.sourceText, lang1, lang2)
+    || detectLanguageFromTranslation(aligned.sourceText, translated, lang1, lang2)
+    || normalizeLangCode(preDetected, lang1, lang2)
+    || normalizeLangCode(gptTarget, lang1, lang2);
+  const target = detected === lang1 ? lang2 : detected === lang2 ? lang1 : null;
 
   return {
     detectedLanguage: detected,
@@ -205,140 +202,6 @@ function stripTrailingPeriod(text) {
   return text.replace(/[.。．]+$/u, '').trimEnd();
 }
 
-function textScriptHint(text) {
-  if (!text) return 'unknown';
-  if (/[\u0E00-\u0E7F]/.test(text)) return 'thai';
-  if (/[\u4E00-\u9FFF]/.test(text)) return 'cjk';
-  if (/[\u3040-\u30FF]/.test(text)) return 'ja';
-  if (/[\uAC00-\uD7AF]/.test(text)) return 'ko';
-  if (/[\u0400-\u04FF]/.test(text)) return 'cyrillic';
-  if (/[\u0600-\u06FF]/.test(text)) return 'arabic';
-  if (/[a-zA-ZáéíóúñüÁÉÍÓÚÑ¿¡]/.test(text)) return 'latin';
-  return 'unknown';
-}
-
-const LATIN_LANGS = new Set([
-  'en', 'es', 'fr', 'de', 'it', 'pt', 'ca', 'nl', 'sv', 'da', 'no', 'fi',
-  'pl', 'cs', 'sk', 'ro', 'hu', 'tr', 'vi', 'id', 'ms', 'tl', 'sw', 'af',
-]);
-
-const LATIN_MARKER_PATTERNS = {
-  es: /\b(el|la|los|las|de|que|y|en|un|una|es|por|con|no|se|lo|le|su|para|muy|pero|bien|hola|gracias|qué|cómo|está|también|ahora|solo|puedo|quiero|tengo|hay|esto|eso|aquí|donde|cuando|porque|algo|nada|más|muy|bueno|vale|claro)\b/gi,
-  en: /\b(the|and|is|are|was|were|you|your|have|has|this|that|with|for|not|but|what|how|hello|thanks|please|can|will|just|from|they|been|would|could|about|into|there|their|when|where|because|something|nothing|more|very|good|okay|right)\b/gi,
-  pt: /\b(o|a|os|as|de|que|e|em|um|uma|não|se|lo|la|por|com|para|muito|mas|bem|olá|obrigad|está|também|agora|só|posso|quero|tenho|há|isto|isso|aqui)\b/gi,
-  fr: /\b(le|la|les|de|que|et|en|un|une|est|pas|se|pour|avec|dans|sur|très|mais|bien|bonjour|merci|comment|aussi|maintenant|je|tu|il|elle|nous|vous|ils|elles|ce|ça|ici)\b/gi,
-};
-
-function scoreLatinLanguage(text, code) {
-  if (!text || !LATIN_MARKER_PATTERNS[code]) return 0;
-  const lower = text.toLowerCase();
-  let score = (lower.match(LATIN_MARKER_PATTERNS[code]) || []).length;
-  if (code === 'es') {
-    score += (lower.match(/[ñáéíóúü¿¡]/g) || []).length * 2;
-    if (/\w+(ción|sión|miento|dad|tad|mente|illo|illa|ando|iendo|ado|ada)\b/i.test(lower)) score += 1.5;
-  }
-  if (code === 'pt') score += (lower.match(/[ãõçáéíóú]/g) || []).length * 1.5;
-  if (code === 'fr') score += (lower.match(/[àâçéèêëîïôùûü]/g) || []).length * 1.5;
-  return score;
-}
-
-function likelyLatinLanguage(text, lang1, lang2) {
-  const l1Latin = LATIN_LANGS.has(lang1);
-  const l2Latin = LATIN_LANGS.has(lang2);
-  if (!l1Latin && !l2Latin) return null;
-  if (l1Latin && !l2Latin) return lang1;
-  if (l2Latin && !l1Latin) return lang2;
-
-  const s1 = scoreLatinLanguage(text, lang1);
-  const s2 = scoreLatinLanguage(text, lang2);
-  if (s1 === s2) return null;
-  return s1 > s2 ? lang1 : lang2;
-}
-
-function hintMatchesLang(hint, code) {
-  if (hint === 'unknown') return null;
-  if (hint === 'thai') return code === 'th';
-  if (hint === 'cjk') return ['zh', 'yue', 'wuu'].includes(code);
-  if (hint === 'ja') return code === 'ja';
-  if (hint === 'ko') return code === 'ko';
-  if (hint === 'cyrillic') return ['ru', 'uk', 'bg', 'sr', 'mk'].includes(code);
-  if (hint === 'arabic') return ['ar', 'fa', 'ur', 'he'].includes(code);
-  if (hint === 'latin') return null;
-  return null;
-}
-
-function alignTranslationFields(sourceText, translatedText, detected, target) {
-  const sourceLikely = likelyLatinLanguage(sourceText, detected, target);
-  const translatedLikely = likelyLatinLanguage(translatedText, detected, target);
-
-  if (sourceLikely === target && translatedLikely === detected) {
-    return { sourceText: translatedText, translatedText: sourceText };
-  }
-  if (sourceLikely === detected && translatedLikely === target) {
-    return { sourceText: sourceText, translatedText: translatedText };
-  }
-
-  let source = sourceText;
-  let translated = translatedText;
-  const sourceHint = textScriptHint(source);
-  const translatedHint = textScriptHint(translated);
-
-  const sourceOk = hintMatchesLang(sourceHint, detected);
-  const translatedOk = hintMatchesLang(translatedHint, target);
-
-  if (sourceOk === false && translatedOk === true) {
-    return { sourceText: translated, translatedText: source };
-  }
-  if (sourceOk === true && translatedOk === false) {
-    return { sourceText: source, translatedText: translated };
-  }
-  if (sourceOk === false && translatedOk === false && sourceHint !== 'unknown' && translatedHint !== 'unknown') {
-    const sourceLooksTarget = hintMatchesLang(sourceHint, target);
-    const translatedLooksDetected = hintMatchesLang(translatedHint, detected);
-    if (sourceLooksTarget === true && translatedLooksDetected === true) {
-      return { sourceText: translated, translatedText: source };
-    }
-  }
-
-  return { sourceText: source, translatedText: translated };
-}
-
-function inferDetectedFromText(text, lang1, lang2) {
-  const hint = textScriptHint(text);
-  if (hintMatchesLang(hint, lang1) === true) return lang1;
-  if (hintMatchesLang(hint, lang2) === true) return lang2;
-
-  if (hint === 'latin') {
-    const l1Latin = LATIN_LANGS.has(lang1);
-    const l2Latin = LATIN_LANGS.has(lang2);
-    if (l1Latin && !l2Latin) return lang1;
-    if (l2Latin && !l1Latin) return lang2;
-  }
-
-  const likely = likelyLatinLanguage(text, lang1, lang2);
-  if (likely) return likely;
-  return null;
-}
-
-function inferDetectedFromTranslation(sourceText, translatedText, lang1, lang2) {
-  const source = sourceText?.trim();
-  const translated = translatedText?.trim();
-  if (!source || !translated) return null;
-  if (source.toLowerCase() === translated.toLowerCase()) return null;
-
-  const sourceLikely = likelyLatinLanguage(source, lang1, lang2);
-  const translatedLikely = likelyLatinLanguage(translated, lang1, lang2);
-
-  if (sourceLikely && translatedLikely && sourceLikely !== translatedLikely) {
-    return sourceLikely;
-  }
-  if (sourceLikely && !translatedLikely) return sourceLikely;
-  if (!sourceLikely && translatedLikely) {
-    return translatedLikely === lang1 ? lang2 : lang1;
-  }
-  return null;
-}
-
 async function translateTextStream(openai, text, lang1, lang2, context, onDelta, { detected } = {}) {
   const userMessage = buildTranslationUserMessage(text, lang1, lang2, context, detected);
 
@@ -376,7 +239,7 @@ async function pipeTranslationStream(res, openai, rawText, lang1, lang2, context
   const writeLine = beginTranslationStream(res);
   writeLine({ event: 'transcript', rawText });
 
-  const preDetected = inferDetectedFromText(rawText, lang1, lang2);
+  const preDetected = detectLanguageInPair(rawText, lang1, lang2);
 
   let accumulated = '';
   await translateTextStream(openai, rawText, lang1, lang2, context, (chunk) => {
@@ -487,7 +350,7 @@ async function generateSpeech(openai, text, lang, voiceId = null) {
 
   let buffer;
   if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
-    buffer = await generateClonedSpeech(input, voiceId);
+    buffer = await generateClonedSpeech(input, voiceId, lang);
   } else {
     const speech = await withRetry(() =>
       openai.audio.speech.create({
@@ -531,7 +394,7 @@ function parseProfileSlot(req, { required = false, fallback = 1 } = {}) {
 function requireProfileSlot(req, res, { fallback = 1 } = {}) {
   const slot = parseProfileSlot(req, { required: fallback == null, fallback });
   if (slot == null) {
-    res.status(400).json({ error: 'Valid profile slot (1–20) is required' });
+    res.status(400).json({ error: 'Valid profile slot (1–11) is required' });
     return null;
   }
   return slot;
@@ -540,7 +403,11 @@ function requireProfileSlot(req, res, { fallback = 1 } = {}) {
 function formatVoiceProfileResponse(user, voiceProfile) {
   return {
     ...voiceProfileSummary(voiceProfile),
-    samples: voiceProfile.samples.map(({ id, createdAt }) => ({ id, createdAt })),
+    samples: voiceProfile.samples.map(({ id, createdAt, durationMs }) => ({
+      id,
+      createdAt,
+      durationMs: Number(durationMs) || 0,
+    })),
     voiceReady: Boolean(resolveVoiceId(user, voiceProfile)),
     elevenlabsConfigured: isElevenLabsConfigured(),
   };
@@ -568,6 +435,7 @@ export function createApp() {
       ok: true,
       authRequired: isAuthRequired(),
       cloneVoiceLanguages: listCloneVoiceLanguageCodes(),
+      cloneVoiceLanguagesByModel: cloneVoiceLanguagesByModel(),
     });
   });
 
@@ -636,6 +504,26 @@ export function createApp() {
     });
   });
 
+  app.get('/api/profile/settings', requireAppAuth, async (req, res) => {
+    try {
+      const settings = await getProfileSettings(req.user.id);
+      res.json(settings);
+    } catch (err) {
+      console.error('Profile settings read error:', err);
+      res.status(500).json({ error: err.message || 'Could not load profile settings' });
+    }
+  });
+
+  app.put('/api/profile/settings', requireAppAuth, async (req, res) => {
+    try {
+      const settings = await saveProfileSettings(req.user.id, req.body || {});
+      res.json(settings);
+    } catch (err) {
+      console.error('Profile settings save error:', err);
+      res.status(500).json({ error: err.message || 'Could not save profile settings' });
+    }
+  });
+
   app.get('/api/voice/profile', requireAppAuth, async (req, res) => {
     const slot = requireProfileSlot(req, res);
     if (slot == null) return;
@@ -670,7 +558,14 @@ export function createApp() {
 
     try {
       const mimeType = req.file.mimetype || 'audio/webm';
-      const profile = await addVoiceSample(req.user.id, slot, req.file.buffer, mimeType);
+      const durationMs = Number(req.body?.durationMs);
+      const profile = await addVoiceSample(
+        req.user.id,
+        slot,
+        req.file.buffer,
+        mimeType,
+        durationMs,
+      );
       res.json({
         ok: true,
         sampleCount: profile.samples.length,
@@ -868,16 +763,15 @@ export function createApp() {
     }
 
     const langCode = lang ? String(lang).toLowerCase().trim() : null;
-    const wantsClone = req.body.voiceMode !== 'default';
 
     try {
       const slot = requireProfileSlot(req, res);
       if (slot == null) return;
       const voiceProfile = await getVoiceProfile(req.user.id, slot);
       const voiceId = resolveVoiceId(req.user, voiceProfile);
-      const useClone = wantsClone && voiceId && supportsClonedVoice(langCode);
+      const useClone = Boolean(voiceId) && supportsClonedVoice(langCode);
 
-      if (wantsClone && supportsClonedVoice(langCode) && !voiceId) {
+      if (req.body.voiceMode === 'clone' && supportsClonedVoice(langCode) && !voiceId) {
         return res.status(400).json({ error: 'Personal voice not ready — set up your voice profile first' });
       }
 

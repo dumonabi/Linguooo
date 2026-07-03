@@ -1,7 +1,9 @@
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
+import { scheduleProfileSettingsSync } from './profile-sync.js';
 import { removeKey } from './auth-storage.js';
 
-export const MAX_PROFILE_SLOTS = 20;
+export const MAX_PROFILE_USERS = 11;
+export const MAX_PROFILE_SLOTS = MAX_PROFILE_USERS;
 
 const SLOTS_REGISTRY_PREFIX = 'lingo-profile-slots:';
 const DEFAULT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11];
@@ -33,6 +35,7 @@ export function saveProfileSlotNumbers(sessionUserId, numbers) {
       .filter((value) => Number.isInteger(value) && value >= 1 && value <= MAX_PROFILE_SLOTS)
       .sort((a, b) => a - b);
     writeProfileValue(getSlotsRegistryKey(sessionUserId), JSON.stringify(normalized));
+    scheduleProfileSettingsSync();
   } catch {
     // ignore storage errors
   }
@@ -51,14 +54,17 @@ export function addProfileSlot(sessionUserId) {
 }
 
 export function deleteProfileSlot(sessionUserId, slotNumber) {
+  const slot = Number(slotNumber);
+  if (!Number.isInteger(slot)) return false;
   const slots = loadProfileSlotNumbers(sessionUserId);
   if (slots.length <= 1) return false;
-  if (!slots.includes(slotNumber)) return false;
-  saveProfileSlotNumbers(sessionUserId, slots.filter((number) => number !== slotNumber));
+  if (!slots.includes(slot)) return false;
+  saveProfileSlotNumbers(sessionUserId, slots.filter((number) => number !== slot));
   return true;
 }
 
 export function canDeleteProfileSlot(sessionUserId, slotNumber) {
+  const slot = Number(slotNumber);
   const slots = loadProfileSlotNumbers(sessionUserId);
-  return slots.length > 1 && slots.includes(slotNumber);
+  return slots.length > 1 && slots.includes(slot);
 }

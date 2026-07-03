@@ -30,7 +30,11 @@ export async function setupApiMocks(page, options = {}) {
         body: JSON.stringify({
           ok: true,
           authRequired,
-          cloneVoiceLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt'],
+          cloneVoiceLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt', 'th', 'vi'],
+          cloneVoiceLanguagesByModel: {
+            v2: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt'],
+            v3: ['th', 'vi'],
+          },
         }),
       });
     }
@@ -101,8 +105,44 @@ export async function setupApiMocks(page, options = {}) {
             minSamples: 6,
             maxSamples: 6,
             canRecordMore: true,
+            totalDurationMs: 0,
+            targetDurationMs: 90000,
           },
         }),
+      });
+    }
+
+    if (path === '/api/profile/settings') {
+      const defaultSettings = {
+        slots: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11],
+        slotNames: {},
+        activeSlot: 1,
+        voiceLangBySlot: {},
+        voiceSlots: [],
+        updatedAt: null,
+      };
+      if (route.request().method() === 'PUT') {
+        let body = {};
+        try {
+          body = route.request().postDataJSON();
+        } catch {
+          body = {};
+        }
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ...defaultSettings,
+            ...body,
+            voiceSlots: [],
+            updatedAt: Date.now(),
+          }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(defaultSettings),
       });
     }
 
@@ -119,6 +159,8 @@ export async function setupApiMocks(page, options = {}) {
           minSamples: 6,
           maxSamples: 6,
           canRecordMore: true,
+          totalDurationMs: 0,
+          targetDurationMs: 90000,
         }),
       });
     }

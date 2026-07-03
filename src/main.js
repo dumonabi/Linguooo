@@ -8,6 +8,7 @@ import { getRecordingMimeType } from './media-utils.js';
 import { apiFetch, clearAuthToken, fetchCurrentUser, getAuthToken, getStoredUser, initAuthStorage, persistKey, readPersistedValue, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
 import { mountAuthGate, openAuthGate, resetAuthGate } from './auth-gate.js';
 import { initUserProfile, refreshUserSession } from './user-profile.js';
+import { hydrateProfileFromServer } from './profile-sync.js';
 import { loadActiveProfileSlot } from './profile-active-slot.js';
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
 import {
@@ -117,7 +118,7 @@ const SHARE_BTN_SVG = '<svg class="footer-share-text-icon" viewBox="0 0 24 24" f
 const PLAY_BTN_SVG = '<svg class="listen-btn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
 const PAUSE_BTN_SVG = '<svg class="listen-btn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
 const RESTART_PLAYBACK_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>';
-const SHARE_AUDIO_BTN_SVG = '<svg class="footer-share-audio-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2.5 9.25v5.5h3.2l6 6V3.25L5.7 9.25H2.5z"/><path d="M13.1 11h8.7v2h-8.7v-2zm4.15-5.55 5.55 5.55-5.55 5.55V13.1h-3.7v-2.2h3.7V6.45z"/></svg>';
+const SHARE_AUDIO_BTN_SVG = '<svg class="footer-share-audio-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg>';
 
 function prefetchAudio(msg) {
   return loadMessageAudio(msg, { prefetch: true });
@@ -127,11 +128,47 @@ function activeSpeakProfileSlot() {
   return loadActiveProfileSlot(state.user?.id) ?? 1;
 }
 
+function isPersonalVoiceReady() {
+  if (state.user?.voiceReady) return true;
+  return Boolean(getStoredUser()?.voiceReady);
+}
+
 function speakModeForMessage(msg) {
   const lang = msg.targetLanguage;
-  if (!lang || !state.user?.voiceReady) return 'default';
+  if (!lang || !isPersonalVoiceReady()) return 'default';
   if (!supportsClonedVoice(lang)) return 'default';
   return 'clone';
+}
+
+function syncMessageAudioCache(msg) {
+  if (!msg?.translated?.trim() || !msg.targetLanguage) {
+    if (msg?.audioUrl || msg?._audioPromise) invalidateMessageAudio(msg);
+    return;
+  }
+
+  const key = audioCacheKey(msg);
+  if (msg.audioUrl && msg._audioKey !== key) {
+    invalidateMessageAudio(msg);
+  } else if (msg._audioKey && msg._audioKey !== key) {
+    invalidateMessageAudio(msg);
+  }
+}
+
+function adoptMessageAudio(source, target) {
+  if (!source || (!source.audioUrl && !source._audioPromise)) return;
+
+  const key = audioCacheKey(target);
+  if (source._audioKey && source._audioKey !== key) {
+    cancelMessageAudio(source);
+    return;
+  }
+
+  if (source.audioUrl) {
+    target.audioUrl = source.audioUrl;
+    target._audioKey = source._audioKey || key;
+  }
+  if (source._audioPromise) target._audioPromise = source._audioPromise;
+  if (source._speakAbort) target._speakAbort = source._speakAbort;
 }
 
 function syncListenBtnVoiceMode(msg) {
@@ -235,7 +272,28 @@ function resetActiveListenButton() {
   syncPlaybackUi(latest, 'idle');
 }
 
-function revealListenButton(message) {
+function hideAudioActions(message) {
+  const card = getMessageCardEl(message);
+  const footer = card?.querySelector('.message-footer-actions');
+  const playbackSlot = card?.querySelector('.message-playback-slot');
+  const shareAudioBtn = card?.querySelector('.share-audio-btn');
+  const listenBtn = card?.querySelector('.listen-btn');
+  if (!footer) return;
+
+  footer.classList.remove('has-audio-actions');
+  footer.setAttribute('hidden', '');
+  playbackSlot?.setAttribute('hidden', '');
+  shareAudioBtn?.setAttribute('hidden', '');
+  listenBtn?.classList.remove('is-ready');
+  shareAudioBtn?.classList.remove('is-ready');
+}
+
+function revealAudioActions(message) {
+  if (!message?.audioUrl) {
+    hideAudioActions(message);
+    return;
+  }
+
   const card = getMessageCardEl(message);
   const footer = card?.querySelector('.message-footer-actions');
   const playbackSlot = card?.querySelector('.message-playback-slot');
@@ -243,6 +301,7 @@ function revealListenButton(message) {
   if (!footer) return;
 
   footer.classList.add('has-audio-actions');
+  footer.removeAttribute('hidden');
   playbackSlot?.removeAttribute('hidden');
   shareAudioBtn?.removeAttribute('hidden');
   card?.querySelector('.listen-btn')?.classList.add('is-ready');
@@ -250,14 +309,15 @@ function revealListenButton(message) {
 }
 
 function startBackgroundAudio(message) {
+  syncMessageAudioCache(message);
   if (message.audioUrl) {
-    revealListenButton(message);
+    revealAudioActions(message);
     return;
   }
 
   void prefetchAudio(message).finally(() => {
     if (message.id !== state.latestMessageId) return;
-    revealListenButton(message);
+    if (message.audioUrl) revealAudioActions(message);
   });
 }
 
@@ -275,6 +335,8 @@ function invalidateMessageAudio(msg) {
     msg.audioUrl = null;
   }
   msg._audioPromise = null;
+  msg._audioKey = null;
+  hideAudioActions(msg);
 }
 
 function stopPlayback() {
@@ -421,6 +483,7 @@ function kickoffPrefetchAudio(prefetchRef, doneData) {
 }
 
 async function loadMessageAudio(msg, { prefetch = false } = {}) {
+  syncMessageAudioCache(msg);
   const key = audioCacheKey(msg);
   if (msg._audioKey && msg._audioKey !== key) {
     invalidateMessageAudio(msg);
@@ -492,6 +555,7 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
 
         msg.audioUrl = URL.createObjectURL(blob);
         msg._speakAbort = null;
+        if (messageId === state.latestMessageId) revealAudioActions(msg);
         return;
       } catch (err) {
         if (err?.name === 'AbortError') throw err;
@@ -598,10 +662,12 @@ async function beginTranslationPlayback(msg, btn) {
   syncPlaybackUi(msg, 'loading');
 
   try {
+    syncMessageAudioCache(msg);
     if (!msg.audioUrl) {
       await loadMessageAudio(msg);
     }
     if (!msg.audioUrl) throw new Error('Audio not ready — tap Play again');
+    revealAudioActions(msg);
 
     playbackEpoch++;
     const epoch = playbackEpoch;
@@ -710,6 +776,10 @@ async function init() {
     showToast,
     onChange: (user) => {
       state.user = user;
+      for (const msg of state.messages) {
+        syncMessageAudioCache(msg);
+        syncListenBtnVoiceMode(msg);
+      }
       const latest = state.messages.at(-1);
       if (latest) syncListenBtnVoiceMode(latest);
     },
@@ -731,7 +801,8 @@ async function ensureAuthenticated() {
   const user = await restoreSessionIfPossible();
   if (user) {
     state.user = user;
-    void fetchCurrentUser().then((data) => {
+    await hydrateProfileFromServer(user.id);
+    void fetchCurrentUser(loadActiveProfileSlot(user?.id)).then((data) => {
       if (data?.user) state.user = data.user;
     }).catch(() => {});
     return true;
@@ -807,6 +878,7 @@ function initPickers() {
     languages: state.languages,
     value: state.lang1,
     circle: true,
+    inBar: true,
     placeholder: '',
     onFocusEdit: syncComposeCaret,
     onChange: (code) => {
@@ -824,6 +896,7 @@ function initPickers() {
     languages: state.languages,
     value: state.lang2,
     circle: true,
+    inBar: true,
     placeholder: '',
     onFocusEdit: syncComposeCaret,
     onChange: (code) => {
@@ -1263,6 +1336,7 @@ function syncComposeCaret() {
     top: markerRect.top - wrapRect.top + ta.scrollTop,
     charWidth,
     lineHeight,
+    markerHeight: markerRect.height,
   });
 }
 
@@ -1686,17 +1760,12 @@ async function applyTranslationResult(data, { requestId, prefetchEntry, sourceRe
   }
 
   if (prev?._streaming && streamId && prev.id === streamId) {
-    if (prev.audioUrl) message.audioUrl = prev.audioUrl;
-    if (prev._audioPromise) message._audioPromise = prev._audioPromise;
-    if (prev._speakAbort) message._speakAbort = prev._speakAbort;
-    if (prev._audioKey) message._audioKey = prev._audioKey;
+    adoptMessageAudio(prev, message);
   }
 
   const hidden = prefetchEntry?.hiddenMessage;
   if (hidden) {
-    if (hidden.audioUrl) message.audioUrl = hidden.audioUrl;
-    if (hidden._audioPromise) message._audioPromise = hidden._audioPromise;
-    if (hidden._speakAbort) message._speakAbort = hidden._speakAbort;
+    adoptMessageAudio(hidden, message);
   }
 
   for (const m of state.messages) {
@@ -2583,6 +2652,7 @@ async function shareClonedAudio(msg, btn) {
       await loadMessageAudio(msg);
     }
     if (!msg.audioUrl) throw new Error('Audio not ready — try again');
+    revealAudioActions(msg);
 
     const blob = await blobFromAudioUrl(msg.audioUrl);
     const filename = `lingu-translation-${Date.now()}.mp3`;
@@ -2624,25 +2694,26 @@ function createMessageCard(msg) {
   const el = document.createElement('article');
   el.className = 'message-card message-card-current';
   el.dataset.messageId = String(msg.id);
-  const hideActions = msg._streaming || msg._loading;
+  const hideTextActions = msg._streaming || msg._loading;
 
   const hasAudio = Boolean(msg.audioUrl);
   const audioActionsClass = hasAudio ? ' has-audio-actions' : '';
+  const hideFooter = hideTextActions || !hasAudio;
 
   el.innerHTML = `
     <div class="message-bubble">
       <div class="message-translated message-translated-only">
         ${renderTranslatedContent(msg)}
-      </div>
-      <div class="message-footer-actions${audioActionsClass}"${hideActions ? ' hidden' : ''}>
-        <div class="message-footer-left">
-          <button type="button" class="icon-btn share-btn share-btn-inline" title="Share" aria-label="Share">
-            ${SHARE_BTN_SVG}
-          </button>
+        <div class="message-text-actions"${hideTextActions ? ' hidden' : ''}>
           <button type="button" class="icon-btn copy-btn copy-btn-inline" title="Copy as text" aria-label="Copy as text">
             ${COPY_BTN_SVG}
           </button>
+          <button type="button" class="icon-btn share-btn share-btn-inline" title="Share" aria-label="Share">
+            ${SHARE_BTN_SVG}
+          </button>
         </div>
+      </div>
+      <div class="message-footer-actions${audioActionsClass}"${hideFooter ? ' hidden' : ''}>
         <div class="message-playback-slot"${hasAudio ? '' : ' hidden'}>
           <div class="message-playback-side message-playback-side-left">
             <button type="button" class="icon-btn playback-seek-btn playback-restart-btn" hidden title="Start from beginning" aria-label="Start from beginning">
