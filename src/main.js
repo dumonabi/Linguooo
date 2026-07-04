@@ -76,6 +76,8 @@ const toastEl = $('#toast');
 const composeBoxEl = $('#compose-box');
 const composeMicBtn = $('#compose-mic');
 const composeNewBtn = $('#compose-new');
+const composeCopyBtn = $('#compose-copy');
+const composeSpeakBtn = $('#compose-speak');
 const composeLevelEl = $('#compose-level');
 const recordingCancelBtn = $('#recording-cancel');
 const recordingSendBtn = $('#recording-send');
@@ -1197,6 +1199,14 @@ function updateComposeState() {
   composeMicBtn.disabled = !ready || busy;
   composeNewBtn.hidden = !canUseDraftActions;
   composeNewBtn.disabled = !canUseDraftActions;
+  if (composeCopyBtn) {
+    composeCopyBtn.hidden = !canUseDraftActions;
+    composeCopyBtn.disabled = !canUseDraftActions;
+  }
+  if (composeSpeakBtn) {
+    composeSpeakBtn.hidden = !canUseDraftActions;
+    composeSpeakBtn.disabled = !canUseDraftActions || draftSpeechBusy;
+  }
   dictationTranslateBtn.hidden = !canUseDraftActions;
   dictationTranslateBtn.disabled = !canUseDraftActions;
   dictationTranslateBtn.classList.toggle('is-ready', canUseDraftActions);
@@ -1258,6 +1268,27 @@ function ensureComposeCaretMirror() {
   return composeCaretMirrorEl;
 }
 
+function syncMirrorStyles(mirror, ta, style) {
+  // Use the fractional width: clientWidth rounds down to whole pixels, which
+  // can make the mirror wrap a word one line later than the real textarea on
+  // mobile, leaving the fake caret on the previous line while typed letters
+  // continue below.
+  mirror.style.width = `${ta.getBoundingClientRect().width}px`;
+  mirror.style.font = style.font;
+  mirror.style.fontSize = style.fontSize;
+  mirror.style.fontFamily = style.fontFamily;
+  mirror.style.fontWeight = style.fontWeight;
+  mirror.style.lineHeight = style.lineHeight;
+  mirror.style.letterSpacing = style.letterSpacing;
+  mirror.style.padding = style.padding;
+  mirror.style.border = style.border;
+  mirror.style.boxSizing = style.boxSizing;
+  mirror.style.whiteSpace = 'pre-wrap';
+  mirror.style.wordWrap = 'break-word';
+  mirror.style.overflowWrap = 'break-word';
+  mirror.style.wordBreak = style.wordBreak;
+}
+
 function syncComposeCaret() {
   const wrap = composeInputWrapEl;
   const ta = dictationInputEl;
@@ -1277,16 +1308,7 @@ function syncComposeCaret() {
 
   const mirror = ensureComposeCaretMirror();
   const style = getComputedStyle(ta);
-  mirror.style.width = `${ta.clientWidth}px`;
-  mirror.style.font = style.font;
-  mirror.style.fontSize = style.fontSize;
-  mirror.style.fontFamily = style.fontFamily;
-  mirror.style.fontWeight = style.fontWeight;
-  mirror.style.lineHeight = style.lineHeight;
-  mirror.style.letterSpacing = style.letterSpacing;
-  mirror.style.padding = style.padding;
-  mirror.style.border = style.border;
-  mirror.style.boxSizing = style.boxSizing;
+  syncMirrorStyles(mirror, ta, style);
 
   const caretPos = focused ? (ta.selectionStart ?? ta.value.length) : ta.value.length;
   const textBefore = ta.value.slice(0, caretPos);
@@ -1393,6 +1415,101 @@ function getDraftText() {
   return dictationInputEl.value.trim() || state.draftText.trim();
 }
 
+let draftSpeechBusy = false;
+let draftSpeechAudio = null;
+
+function stopDraftSpeech() {
+  if (draftSpeechAudio) {
+    draftSpeechAudio.pause();
+    draftSpeechAudio.src = '';
+    draftSpeechAudio = null;
+  }
+  composeSpeakBtn?.classList.remove('is-playing');
+}
+
+async function speakDraftAloud() {
+  const text = getDraftText();
+  if (!text || draftSpeechBusy) return;
+
+  if (draftSpeechAudio && !draftSpeechAudio.paused) {
+    stopDraftSpeech();
+    return;
+  }
+
+  draftSpeechBusy = true;
+  composeSpeakBtn?.classList.add('is-loading');
+  updateComposeState();
+
+  try {
+    const res = await apiFetch('/api/speak', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        slot: activeSpeakProfileSlot(),
+      }),
+    });
+
+    if (!res.ok) {
+      let message = 'Could not generate audio';
+      try {
+        const data = await res.json();
+        message = data.error || message;
+      } catch {
+        if (res.status === 429) message = 'Too many audio requests — wait a moment';
+      }
+      throw new Error(message);
+    }
+
+    const blob = await res.blob();
+    if (!blob.size) throw new Error('Could not generate audio');
+
+    stopPlayback();
+    stopDraftSpeech();
+
+    const url = URL.createObjectURL(blob);
+    const audio = createPlaybackAudio(url);
+    draftSpeechAudio = audio;
+    composeSpeakBtn?.classList.add('is-playing');
+
+    const cleanup = () => {
+      URL.revokeObjectURL(url);
+      if (draftSpeechAudio === audio) {
+        draftSpeechAudio = null;
+        composeSpeakBtn?.classList.remove('is-playing');
+      }
+    };
+    audio.onended = cleanup;
+    audio.onerror = cleanup;
+
+    await audio.play();
+  } catch (err) {
+    if (err?.name !== 'AbortError') {
+      showToast(err?.message || 'Could not speak message');
+    }
+    stopDraftSpeech();
+  } finally {
+    draftSpeechBusy = false;
+    composeSpeakBtn?.classList.remove('is-loading');
+    updateComposeState();
+    releaseActionButtonFocus(composeSpeakBtn);
+  }
+}
+
+async function copyDraftText(btn) {
+  const text = getDraftText();
+  if (!text) return;
+  acknowledgeActionButton(btn);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Copied as text');
+  } catch {
+    showToast('Could not copy');
+  } finally {
+    releaseActionButtonFocus(btn);
+  }
+}
+
 function bindDictation() {
   dictationInputEl.addEventListener('input', () => {
     state.draftText = dictationInputEl.value;
@@ -1438,7 +1555,15 @@ function bindDictation() {
     void translateDraft();
   });
   composeNewBtn.addEventListener('click', () => {
+    stopDraftSpeech();
     clearDraftText();
+  });
+  composeCopyBtn?.addEventListener('click', () => {
+    void copyDraftText(composeCopyBtn);
+  });
+  composeSpeakBtn?.addEventListener('click', () => {
+    acknowledgeActionButton(composeSpeakBtn);
+    void speakDraftAloud();
   });
   window.addEventListener('resize', () => {
     resizeDictationInput();
@@ -1455,6 +1580,7 @@ async function translateDraft() {
   }
   if (state.isProcessing || state.isRecording || state.stoppingRecording) return;
 
+  stopDraftSpeech();
   abortActiveConverse();
   const controller = new AbortController();
   activeConverseController = controller;
@@ -1834,16 +1960,7 @@ function syncComposeLoadingDots() {
 
   const mirror = ensureComposeCaretMirror();
   const style = getComputedStyle(ta);
-  mirror.style.width = `${ta.clientWidth}px`;
-  mirror.style.font = style.font;
-  mirror.style.fontSize = style.fontSize;
-  mirror.style.fontFamily = style.fontFamily;
-  mirror.style.fontWeight = style.fontWeight;
-  mirror.style.lineHeight = style.lineHeight;
-  mirror.style.letterSpacing = style.letterSpacing;
-  mirror.style.padding = style.padding;
-  mirror.style.border = style.border;
-  mirror.style.boxSizing = style.boxSizing;
+  syncMirrorStyles(mirror, ta, style);
 
   const textBefore = ta.value;
   const needsSpace = textBefore.length > 0 && !/\s$/.test(textBefore);
@@ -2414,6 +2531,7 @@ async function beginRecording() {
 
   const sessionId = ++recordingSessionId;
   primeMicAudioOnGesture();
+  stopDraftSpeech();
   abortActiveConverse();
   cancelDraftTranslationPrefetch();
   clearPendingSourceRecording();

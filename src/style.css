@@ -1079,6 +1079,7 @@ html.user-profile-menu-open body {
   display: flex;
   align-items: center;
   justify-content: flex-start;
+  gap: 0.6rem;
   min-width: 0;
 }
 
@@ -1099,6 +1100,7 @@ html.user-profile-menu-open body {
 .compose-idle {
   display: flex;
   align-items: center;
+  gap: 0.6rem;
 }
 
 .compose-box.is-recording .compose-idle,
@@ -1107,6 +1109,7 @@ html.user-profile-menu-open body {
 }
 
 .compose-box.is-recording .compose-new-btn,
+.compose-box.is-recording .compose-copy-btn,
 .compose-box.is-recording .compose-translate-below {
   display: none;
 }
@@ -1249,7 +1252,9 @@ html.user-profile-menu-open body {
 
 .compose-mic-btn,
 .compose-translate-below,
-.compose-new-btn {
+.compose-new-btn,
+.compose-copy-btn,
+.compose-speak-btn {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1318,6 +1323,49 @@ html.user-profile-menu-open body {
   height: var(--page-symbol-size);
 }
 
+.compose-copy-btn {
+  min-width: var(--page-symbol-size);
+  min-height: var(--page-symbol-size);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  color: #ffffff;
+  background: transparent;
+}
+
+.compose-copy-btn svg {
+  width: calc(var(--page-symbol-size) * 0.82);
+  height: calc(var(--page-symbol-size) * 0.82);
+}
+
+.compose-speak-btn {
+  min-width: var(--page-symbol-size);
+  min-height: var(--page-symbol-size);
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  color: var(--accent-light);
+  background: transparent;
+}
+
+.compose-speak-btn svg {
+  width: calc(var(--page-symbol-size) * 0.9);
+  height: calc(var(--page-symbol-size) * 0.9);
+}
+
+.compose-speak-btn.is-loading {
+  animation: speak-btn-pulse 0.9s ease-in-out infinite;
+}
+
+.compose-speak-btn.is-playing {
+  color: #86efac;
+}
+
+@keyframes speak-btn-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 @media (hover: hover) {
   .compose-mic-btn:hover:not(:disabled) {
     color: #86efac;
@@ -1335,6 +1383,16 @@ html.user-profile-menu-open body {
     color: #fecaca;
     transform: scale(1.06);
   }
+
+  .compose-copy-btn:hover:not(:disabled) {
+    color: #e5e7eb;
+    transform: scale(1.06);
+  }
+
+  .compose-speak-btn:hover:not(:disabled) {
+    color: #86efac;
+    transform: scale(1.06);
+  }
 }
 
 .compose-translate-below.is-ready {
@@ -1342,12 +1400,16 @@ html.user-profile-menu-open body {
 }
 
 .compose-translate-below[hidden],
-.compose-new-btn[hidden] {
+.compose-new-btn[hidden],
+.compose-copy-btn[hidden],
+.compose-speak-btn[hidden] {
   display: none !important;
 }
 
 .compose-mic-btn:disabled,
 .compose-new-btn:disabled,
+.compose-copy-btn:disabled,
+.compose-speak-btn:disabled,
 .compose-translate-below:disabled,
 .compose-recording-cancel:disabled,
 .compose-recording-send:disabled {
@@ -1373,9 +1435,19 @@ html.user-profile-menu-open body {
   background: #000000;
 }
 
+.translate-below-panel {
+  display: flex;
+  justify-content: center;
+  padding: 0.25rem 0 0.85rem;
+}
+
+.translate-below-panel:has(.compose-translate-below[hidden]) {
+  display: none;
+}
+
 .message-panel-body {
   width: 100%;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 .message-card {
