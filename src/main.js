@@ -1598,6 +1598,9 @@ async function fetchTranscriptFromAudio({ blob, mimeType }) {
     data = {};
   }
 
+  if (res.status === 401) {
+    throw new Error('Session expired — sign in again and resend');
+  }
   if (!res.ok) {
     throw new Error(data.error || 'Could not transcribe audio');
   }

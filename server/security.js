@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
+  findUserByPassphrase,
   findUserByPassphraseSync,
   getGuestUser,
   isAuthRequired,
@@ -79,8 +80,24 @@ export function resolveRequestUser(req) {
   return findUserByPassphraseSync(token);
 }
 
-export function requireAppAuth(req, res, next) {
-  const user = resolveRequestUser(req);
+export async function requireAppAuth(req, res, next) {
+  let user = resolveRequestUser(req);
+
+  // On a cold serverless instance the in-memory user registry is empty, so
+  // the sync passphrase lookup misses users that exist in Blob storage.
+  // Fall back to the async lookup (which loads the registry) before 401ing.
+  if (!user) {
+    const header = req.headers.authorization;
+    const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+    if (token) {
+      try {
+        user = await findUserByPassphrase(token);
+      } catch {
+        user = null;
+      }
+    }
+  }
+
   if (!user) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
