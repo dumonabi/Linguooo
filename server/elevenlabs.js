@@ -66,6 +66,34 @@ function resolveSpeechModelId(langCode) {
   return resolveCloneVoiceModel(langCode) || ELEVEN_MODEL_V2;
 }
 
+// Per-request character limits (ElevenLabs docs): exceeding them returns
+// a max_character_limit_exceeded error, so clamp at a sentence boundary.
+const MODEL_CHAR_LIMITS = {
+  eleven_v3: 5000,
+  eleven_multilingual_v2: 10000,
+  eleven_flash_v2_5: 40000,
+  eleven_turbo_v2_5: 40000,
+};
+const DEFAULT_CHAR_LIMIT = 5000;
+
+function clampTextForModel(text, modelId) {
+  const limit = MODEL_CHAR_LIMITS[modelId] ?? DEFAULT_CHAR_LIMIT;
+  if (text.length <= limit) return text;
+
+  const slice = text.slice(0, limit);
+  const sentenceEnd = Math.max(
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf('! '),
+    slice.lastIndexOf('? '),
+    slice.lastIndexOf('。'),
+  );
+  const cutAt = sentenceEnd > limit * 0.5 ? sentenceEnd + 1 : slice.lastIndexOf(' ');
+  const clamped = slice.slice(0, cutAt > 0 ? cutAt : limit).trimEnd();
+
+  console.warn(`TTS text clamped for ${modelId}: ${text.length} chars exceeds ${limit} limit`);
+  return clamped;
+}
+
 export async function generateClonedSpeech(text, voiceId, langCode = null) {
   const apiKey = getElevenLabsApiKey();
   if (!apiKey) {
@@ -77,7 +105,7 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
 
   const modelId = resolveSpeechModelId(langCode);
   const payload = {
-    text,
+    text: clampTextForModel(text, modelId),
     model_id: modelId,
     voice_settings: {
       stability: 0.45,

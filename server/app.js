@@ -52,6 +52,7 @@ import {
   listCloneVoiceLanguageCodes,
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
+import { waitUntil } from '@vercel/functions';
 import { createSessionToken } from './session-token.js';
 import { isPersistentBlobEnabled } from './persistent-store.js';
 import {
@@ -203,6 +204,11 @@ function stripTrailingPeriod(text) {
   return text.replace(/[.。．]+$/u, '').trimEnd();
 }
 
+// A 90s recording transcribes to ~2,000 chars; its translation can need
+// 600+ output tokens in token-dense scripts (Thai, Hindi, CJK). 1,200
+// leaves ample headroom — you only pay for tokens actually generated.
+const TRANSLATION_MAX_TOKENS = 1200;
+
 async function translateTextStream(openai, text, lang1, lang2, context, onDelta, { detected } = {}) {
   const userMessage = buildTranslationUserMessage(text, lang1, lang2, context, detected);
 
@@ -210,7 +216,7 @@ async function translateTextStream(openai, text, lang1, lang2, context, onDelta,
     openai.chat.completions.create({
       model: 'gpt-4o-mini',
       temperature: 0.25,
-      max_tokens: 180,
+      max_tokens: TRANSLATION_MAX_TOKENS,
       stream: true,
       messages: [
         { role: 'system', content: buildStreamingSystemPrompt(lang1, lang2) },
@@ -219,10 +225,14 @@ async function translateTextStream(openai, text, lang1, lang2, context, onDelta,
     })
   );
 
+  let finishReason = null;
   for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content || '';
+    const choice = chunk.choices[0];
+    const delta = choice?.delta?.content || '';
     if (delta) onDelta(delta);
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
   }
+  return { truncated: finishReason === 'length' };
 }
 
 function beginTranslationStream(res) {
@@ -236,17 +246,21 @@ function beginTranslationStream(res) {
   };
 }
 
-async function pipeTranslationStream(res, openai, rawText, lang1, lang2, context) {
+async function pipeTranslationStream(res, openai, rawText, lang1, lang2, context, { warmSpeech } = {}) {
   const writeLine = beginTranslationStream(res);
   writeLine({ event: 'transcript', rawText });
 
   const preDetected = detectLanguageInPair(rawText, lang1, lang2);
 
   let accumulated = '';
-  await translateTextStream(openai, rawText, lang1, lang2, context, (chunk) => {
+  const { truncated } = await translateTextStream(openai, rawText, lang1, lang2, context, (chunk) => {
     accumulated += chunk;
     writeLine({ event: 'delta', text: chunk });
   }, { detected: preDetected });
+
+  if (truncated) {
+    console.warn(`Translation hit the ${TRANSLATION_MAX_TOKENS}-token cap and was cut (input ${rawText.length} chars)`);
+  }
 
   const translated = finalizeTranslation(rawText, accumulated, lang1, lang2, preDetected);
 
@@ -256,8 +270,35 @@ async function pipeTranslationStream(res, openai, rawText, lang1, lang2, context
     return;
   }
 
-  writeLine({ event: 'done', rawText, ...translated });
+  // Start TTS before the client asks for it so /api/speak hits a warm cache.
+  if (warmSpeech && translated.targetLanguage) {
+    warmSpeech(translated.translatedText, translated.targetLanguage);
+  }
+
+  writeLine({ event: 'done', rawText, ...translated, ...(truncated ? { truncated: true } : {}) });
   res.end();
+}
+
+function buildSpeechWarmer(openai, req) {
+  return (text, lang) => {
+    const warmPromise = (async () => {
+      const slot = parseProfileSlot(req);
+      const voiceProfile = await getVoiceProfile(req.user.id, slot);
+      const voiceId = resolveVoiceId(req.user, voiceProfile);
+      const useClone = Boolean(voiceId) && supportsClonedVoice(lang);
+      await generateSpeech(openai, text, lang, useClone ? voiceId : null);
+    })().catch((err) => {
+      console.error('TTS warm-up error:', err?.message || err);
+    });
+
+    // Keep the serverless instance alive until the warm-up finishes;
+    // otherwise Vercel freezes the function as soon as the response ends.
+    try {
+      waitUntil(warmPromise);
+    } catch {
+      // Outside a Vercel request context (local dev) this is a no-op.
+    }
+  };
 }
 
 function parseConversationContext(value) {
@@ -339,35 +380,51 @@ function writeTtsCache(key, buffer) {
   }
 }
 
-async function generateSpeech(openai, text, lang, voiceId = null) {
+async function generateSpeechBuffer(openai, input, lang, voiceId = null) {
+  if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
+    return generateClonedSpeech(input, voiceId, lang);
+  }
+
+  const speech = await withRetry(() =>
+    openai.audio.speech.create({
+      model: 'gpt-4o-mini-tts',
+      voice: 'nova',
+      input,
+      instructions: 'Speak at a natural, slightly brisk pace.',
+      response_format: 'mp3',
+    }),
+    2
+  );
+  return Buffer.from(await speech.arrayBuffer());
+}
+
+// Dedupes concurrent generations so a warm-up started at translation time
+// and the client's /api/speak prefetch share a single TTS request.
+const ttsPending = new Map();
+
+function generateSpeech(openai, text, lang, voiceId = null) {
   const input = prepareTextForSpeech(text, lang);
   if (!input) {
-    throw new Error('No speakable text');
+    return Promise.reject(new Error('No speakable text'));
   }
 
   const cacheKey = ttsCacheKey(input, lang, voiceId);
   const cached = readTtsCache(cacheKey);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
 
-  let buffer;
-  if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
-    buffer = await generateClonedSpeech(input, voiceId, lang);
-  } else {
-    const speech = await withRetry(() =>
-      openai.audio.speech.create({
-        model: 'tts-1',
-        voice: 'nova',
-        input,
-        speed: 1.08,
-        response_format: 'mp3',
-      }),
-      2
-    );
-    buffer = Buffer.from(await speech.arrayBuffer());
-  }
+  const pending = ttsPending.get(cacheKey);
+  if (pending) return pending;
 
-  writeTtsCache(cacheKey, buffer);
-  return buffer;
+  const promise = generateSpeechBuffer(openai, input, lang, voiceId)
+    .then((buffer) => {
+      writeTtsCache(cacheKey, buffer);
+      return buffer;
+    })
+    .finally(() => {
+      ttsPending.delete(cacheKey);
+    });
+  ttsPending.set(cacheKey, promise);
+  return promise;
 }
 
 function prepareTextForSpeech(text, lang) {
@@ -717,7 +774,9 @@ export function createApp() {
         return res.status(400).json({ error: 'No speech detected' });
       }
 
-      await pipeTranslationStream(res, openai, rawText, lang1, lang2, context);
+      await pipeTranslationStream(res, openai, rawText, lang1, lang2, context, {
+        warmSpeech: buildSpeechWarmer(openai, req),
+      });
     } catch (err) {
       console.error('Converse error:', err);
       if (res.headersSent) {
@@ -744,7 +803,9 @@ export function createApp() {
     }
 
     try {
-      await pipeTranslationStream(res, openai, rawText, lang1, lang2, context);
+      await pipeTranslationStream(res, openai, rawText, lang1, lang2, context, {
+        warmSpeech: buildSpeechWarmer(openai, req),
+      });
     } catch (err) {
       console.error('Translate error:', err);
       if (res.headersSent) {
@@ -778,7 +839,14 @@ export function createApp() {
         return res.status(400).json({ error: 'Personal voice not ready — set up your voice profile first' });
       }
 
-      const buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
+      let buffer;
+      try {
+        buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
+      } catch {
+        // A shared warm-up promise may have died with a frozen serverless
+        // instance; retry once with a fresh generation.
+        buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
+      }
       res.set('Content-Type', 'audio/mpeg');
       res.set('Cache-Control', 'private, max-age=3600');
       res.set('X-Voice-Mode', useClone ? 'clone' : 'default');

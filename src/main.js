@@ -1521,6 +1521,7 @@ async function sendTextForTranslation({ text, signal, requestId, mode = 'active'
           lang1,
           lang2,
           context: buildConversationContext(),
+          slot: activeSpeakProfileSlot(),
         }),
         signal,
       }),
@@ -2158,6 +2159,7 @@ async function submitRecording({
     form.append('lang2', lang2);
     form.append('durationMs', String(safeRecordingMs));
     form.append('context', JSON.stringify(context));
+    form.append('slot', String(activeSpeakProfileSlot()));
     return form;
   };
 
@@ -2428,10 +2430,11 @@ async function beginRecording() {
 
     prepareMicMeter(stream);
 
+    // 32kbps Opus is plenty for speech transcription and shrinks uploads ~3x.
     const mimeType = getRecordingMimeType();
-    state.mediaRecorder = mimeType
-      ? new MediaRecorder(stream, { mimeType })
-      : new MediaRecorder(stream);
+    const recorderOptions = { audioBitsPerSecond: 32000 };
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    state.mediaRecorder = new MediaRecorder(stream, recorderOptions);
 
     state.mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) state.audioChunks.push(e.data);
