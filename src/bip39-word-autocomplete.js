@@ -1,6 +1,17 @@
+import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 const MIN_QUERY_LENGTH = 3;
+
+function isCompleteMnemonic(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized) return false;
+  try {
+    return validateMnemonic(normalized, wordlist);
+  } catch {
+    return false;
+  }
+}
 
 function getCurrentWord(textarea) {
   const value = textarea.value;
@@ -34,8 +45,20 @@ export function attachBip39WordAutocomplete(textarea, listEl) {
   }
 
   function renderList() {
+    // A pasted (or fully typed) valid phrase needs no suggestions.
+    if (isCompleteMnemonic(textarea.value)) {
+      hideList();
+      return;
+    }
+
     const { fragment } = getCurrentWord(textarea);
     const items = filteredWords(fragment);
+
+    // Don't suggest the word the user already finished typing.
+    if (items.length === 1 && items[0] === fragment) {
+      hideList();
+      return;
+    }
     listEl.innerHTML = items
       .map((word) => `<li class="auth-word-option" data-word="${word}" role="option">${word}</li>`)
       .join('');
