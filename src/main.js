@@ -2890,7 +2890,33 @@ function showToast(message) {
   showToast._timer = setTimeout(() => { toastEl.hidden = true; }, 6000);
 }
 
+// iOS Safari does not honor ::selection styles, so mirror the native text
+// selection with a custom highlight that we can style (light green + black).
+function bindSelectionHighlight() {
+  if (typeof Highlight !== 'function' || !CSS?.highlights) return;
+
+  document.addEventListener('selectionchange', () => {
+    const selection = document.getSelection();
+    const ranges = [];
+
+    for (let i = 0; i < (selection?.rangeCount || 0); i += 1) {
+      const range = selection.getRangeAt(i);
+      if (range.collapsed) continue;
+      const node = range.commonAncestorContainer;
+      const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      if (el?.closest('.message-translated-text')) ranges.push(range);
+    }
+
+    if (ranges.length) {
+      CSS.highlights.set('lingu-text-selection', new Highlight(...ranges));
+    } else {
+      CSS.highlights.delete('lingu-text-selection');
+    }
+  });
+}
+
 function bindEvents() {
+  bindSelectionHighlight();
   composeMicBtn.addEventListener('pointerdown', warmMicForRecording, { passive: true });
   composeMicBtn.addEventListener('click', () => void beginRecording());
   recordingCancelBtn.addEventListener('click', () => void cancelRecording());

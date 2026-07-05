@@ -1505,6 +1505,24 @@ html.user-profile-menu-open body {
   width: 100%;
   line-height: 1.45;
   word-break: break-word;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.message-translated-text::selection {
+  background: var(--compose-text);
+  color: #000000;
+}
+
+.message-translated-text::-moz-selection {
+  background: var(--compose-text);
+  color: #000000;
+}
+
+/* iOS Safari ignores ::selection, so the same look is replicated with the
+   CSS Custom Highlight API driven from a selectionchange listener. */
+::highlight(lingu-text-selection) {
+  background-color: var(--compose-text);
+  color: #000000;
 }
 
 .message-text-actions {
