@@ -973,6 +973,35 @@ html.user-profile-menu-open body {
   overflow-wrap: break-word;
 }
 
+/* iOS Safari ignores ::selection inside a textarea, so the selection is
+   painted by a mirror overlay that sits on top of the (then transparent)
+   textarea text. Only activated on iOS devices. */
+.compose-selection-mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  color: var(--compose-text);
+  z-index: 1;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.compose-selection-mirror[hidden] {
+  display: none;
+}
+
+.compose-selection-mirror .compose-selection-range {
+  background: var(--compose-text);
+  color: #000000;
+  border-radius: 3px;
+}
+
+.compose-input.has-selection-overlay {
+  color: transparent;
+}
+
 .compose-caret,
 .lang-picker-caret {
   position: absolute;

@@ -2915,8 +2915,71 @@ function bindSelectionHighlight() {
   });
 }
 
+function isIosDevice() {
+  return /iP(hone|ad|od)/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+// iOS Safari also ignores ::selection inside the compose textarea. Since the
+// Custom Highlight API cannot reach a textarea's internal text, the selection
+// is painted by a mirror overlay on top while the textarea text goes
+// transparent for the duration of the selection.
+function bindComposeSelectionOverlay() {
+  const ta = dictationInputEl;
+  const wrap = composeInputWrapEl;
+  if (!ta || !wrap || !isIosDevice()) return;
+
+  let overlay = null;
+
+  function ensureOverlay() {
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.className = 'compose-selection-mirror';
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.hidden = true;
+    wrap.appendChild(overlay);
+    return overlay;
+  }
+
+  function clearOverlay() {
+    if (!overlay || overlay.hidden) return;
+    overlay.hidden = true;
+    overlay.replaceChildren();
+    ta.classList.remove('has-selection-overlay');
+  }
+
+  function syncOverlay() {
+    const start = ta.selectionStart ?? 0;
+    const end = ta.selectionEnd ?? 0;
+    if (document.activeElement !== ta || start === end || ta.disabled) {
+      clearOverlay();
+      return;
+    }
+
+    const el = ensureOverlay();
+    syncMirrorStyles(el, ta, getComputedStyle(ta));
+
+    const selected = document.createElement('span');
+    selected.className = 'compose-selection-range';
+    selected.textContent = ta.value.slice(start, end);
+
+    el.replaceChildren(
+      document.createTextNode(ta.value.slice(0, start)),
+      selected,
+      document.createTextNode(ta.value.slice(end)),
+    );
+    el.hidden = false;
+    ta.classList.add('has-selection-overlay');
+  }
+
+  document.addEventListener('selectionchange', syncOverlay);
+  ta.addEventListener('input', syncOverlay);
+  ta.addEventListener('blur', clearOverlay);
+}
+
 function bindEvents() {
   bindSelectionHighlight();
+  bindComposeSelectionOverlay();
   composeMicBtn.addEventListener('pointerdown', warmMicForRecording, { passive: true });
   composeMicBtn.addEventListener('click', () => void beginRecording());
   recordingCancelBtn.addEventListener('click', () => void cancelRecording());
