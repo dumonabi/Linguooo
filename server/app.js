@@ -53,6 +53,7 @@ import {
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
 import { waitUntil } from '@vercel/functions';
+import { splitSpeechText } from './speech-chunks.js';
 import { createSessionToken } from './session-token.js';
 import { isPersistentBlobEnabled } from './persistent-store.js';
 import {
@@ -286,7 +287,13 @@ function buildSpeechWarmer(openai, req) {
       const voiceProfile = await getVoiceProfile(req.user.id, slot);
       const voiceId = resolveVoiceId(req.user, voiceProfile);
       const useClone = Boolean(voiceId) && supportsClonedVoice(lang);
-      await generateSpeech(openai, text, lang, useClone ? voiceId : null);
+      const speakVoiceId = useClone ? voiceId : null;
+
+      // Mirror the client's head/tail split so both chunks are cached and
+      // the short head chunk is ready first.
+      const { head, tail } = splitSpeechText(text);
+      await generateSpeech(openai, head, lang, speakVoiceId);
+      if (tail) await generateSpeech(openai, tail, lang, speakVoiceId);
     })().catch((err) => {
       console.error('TTS warm-up error:', err?.message || err);
     });

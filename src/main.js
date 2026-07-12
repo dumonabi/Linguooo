@@ -1,5 +1,6 @@
 import { createLangPicker, hideAllLangPickerCarets } from './lang-picker.js';
 import { listCloneVoiceLanguageCodes, supportsClonedVoice } from './elevenlabs-languages.js';
+import { splitSpeechText } from './speech-chunks.js';
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
@@ -159,6 +160,10 @@ function adoptMessageAudio(source, target) {
   }
   if (source._audioPromise) target._audioPromise = source._audioPromise;
   if (source._speakAbort) target._speakAbort = source._speakAbort;
+  if (source._audioUrls) target._audioUrls = source._audioUrls;
+  if (source._audioTailPromise) target._audioTailPromise = source._audioTailPromise;
+  if (source._audioTailUrl) target._audioTailUrl = source._audioTailUrl;
+  target._audioPartial = Boolean(source._audioPartial);
 }
 
 function syncListenBtnVoiceMode(msg) {
@@ -247,6 +252,14 @@ function restartActivePlayback(msg) {
   const audio = state.currentAudio;
   if (!audio || activePlayback?.messageId !== msg.id) return;
 
+  // If playback is past the head chunk, restarting the current element would
+  // only rewind the tail; reset the whole playback instead.
+  if (activePlayback.part === 'tail') {
+    stopPlayback();
+    syncPlaybackUi(msg, 'idle');
+    return;
+  }
+
   audio.pause();
   try {
     audio.currentTime = 0;
@@ -320,11 +333,18 @@ function cancelMessageAudio(msg) {
 }
 
 function invalidateMessageAudio(msg) {
+  for (const url of msg._audioUrls || []) {
+    URL.revokeObjectURL(url);
+  }
+  msg._audioUrls = null;
   if (msg.audioUrl) {
     URL.revokeObjectURL(msg.audioUrl);
     msg.audioUrl = null;
   }
   msg._audioPromise = null;
+  msg._audioTailPromise = null;
+  msg._audioTailUrl = null;
+  msg._audioPartial = false;
   msg._audioKey = null;
   hideAudioActions(msg);
 }
@@ -472,6 +492,85 @@ function kickoffPrefetchAudio(prefetchRef, doneData) {
   void prefetchAudio(msg);
 }
 
+const SPEAK_ERR_MSG = 'Audio not ready — tap Listen again';
+
+function trackMessageAudioUrl(msg, url) {
+  if (!msg._audioUrls) msg._audioUrls = [];
+  msg._audioUrls.push(url);
+  return url;
+}
+
+async function fetchSpeakBlob(msg, text, controller, { attempts = 2 } = {}) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    try {
+      const res = await apiFetch('/api/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          lang: msg.targetLanguage,
+          voiceMode: speakModeForMessage(msg),
+          slot: activeSpeakProfileSlot(),
+        }),
+        signal: controller.signal,
+      });
+
+      let message = SPEAK_ERR_MSG;
+      if (!res.ok) {
+        try {
+          const data = await res.json();
+          message = data.error || SPEAK_ERR_MSG;
+        } catch {
+          if (res.status === 429) message = 'Too many audio requests — wait a moment';
+        }
+        throw new Error(message);
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('audio')) {
+        throw new Error(SPEAK_ERR_MSG);
+      }
+
+      const blob = await res.blob();
+      if (!blob.size) throw new Error(SPEAK_ERR_MSG);
+      return blob;
+    } catch (err) {
+      if (err?.name === 'AbortError') throw err;
+      lastError = err;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
+  }
+
+  throw lastError || new Error(SPEAK_ERR_MSG);
+}
+
+// Fetches the remainder of a chunked message in the background. When it
+// lands, future plays get the combined audio; an in-progress playback of the
+// head chunk chains into the tail via msg._audioTailUrl.
+function startTailAudioFetch(msg, key, headBlob, tailText, controller) {
+  msg._audioTailPromise = (async () => {
+    const tailBlob = await fetchSpeakBlob(msg, tailText, controller, { attempts: 2 });
+    if (controller.signal.aborted || msg._audioKey !== key) return;
+
+    msg._audioTailUrl = trackMessageAudioUrl(msg, URL.createObjectURL(tailBlob));
+    const fullBlob = new Blob([headBlob, tailBlob], { type: 'audio/mpeg' });
+    msg.audioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(fullBlob));
+    msg._audioPartial = false;
+    msg._speakAbort = null;
+  })().catch((err) => {
+    msg._audioTailPromise = null;
+    if (err?.name !== 'AbortError') {
+      console.warn('Tail audio fetch failed:', err?.message || err);
+    }
+  });
+}
+
 async function loadMessageAudio(msg, { prefetch = false } = {}) {
   syncMessageAudioCache(msg);
   const key = audioCacheKey(msg);
@@ -491,9 +590,7 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
     if (msg.audioUrl) return;
   }
 
-  const attempts = prefetch ? 2 : 2;
   const messageId = msg.id;
-  const errMsg = 'Audio not ready — tap Listen again';
 
   msg._audioPromise = enqueueSpeak(async () => {
     if (prefetch && state.latestMessageId && messageId !== state.latestMessageId) return;
@@ -505,60 +602,30 @@ async function loadMessageAudio(msg, { prefetch = false } = {}) {
     const controller = new AbortController();
     msg._speakAbort = controller;
 
-    let lastError;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      if (prefetch && state.latestMessageId && messageId !== state.latestMessageId) return;
+    // Generate the first sentence/clause on its own so playback can start
+    // while the rest of the audio is still being synthesized.
+    const { head, tail } = splitSpeechText(msg.translated);
 
-      try {
-        const res = await apiFetch('/api/speak', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: msg.translated,
-            lang: msg.targetLanguage,
-            voiceMode: speakModeForMessage(msg),
-            slot: activeSpeakProfileSlot(),
-          }),
-          signal: controller.signal,
-        });
+    let headBlob;
+    try {
+      headBlob = await fetchSpeakBlob(msg, head, controller);
+    } catch (err) {
+      if (err?.name !== 'AbortError') invalidateMessageAudio(msg);
+      msg._speakAbort = null;
+      throw err;
+    }
+    if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-        let message = errMsg;
-        if (!res.ok) {
-          try {
-            const data = await res.json();
-            message = data.error || errMsg;
-          } catch {
-            if (res.status === 429) message = 'Too many audio requests — wait a moment';
-          }
-          throw new Error(message);
-        }
+    msg.audioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(headBlob));
+    msg._audioPartial = Boolean(tail);
 
-        const contentType = res.headers.get('content-type') || '';
-        if (!contentType.includes('audio')) {
-          throw new Error(errMsg);
-        }
-
-        const blob = await res.blob();
-        if (!blob.size) throw new Error(errMsg);
-        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-        msg.audioUrl = URL.createObjectURL(blob);
-        msg._speakAbort = null;
-        if (messageId === state.latestMessageId) revealAudioActions(msg);
-        return;
-      } catch (err) {
-        if (err?.name === 'AbortError') throw err;
-        lastError = err;
-        invalidateMessageAudio(msg);
-        if (attempt < attempts) {
-          await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
-        }
-      }
+    if (tail) {
+      startTailAudioFetch(msg, key, headBlob, tail, controller);
+    } else {
+      msg._speakAbort = null;
     }
 
-    msg._speakAbort = null;
-    throw lastError || new Error(errMsg);
+    if (messageId === state.latestMessageId) revealAudioActions(msg);
   });
 
   try {
@@ -646,6 +713,62 @@ async function toggleTranslationAudio(msg, btn) {
   await beginTranslationPlayback(msg, btn);
 }
 
+function finishPlayback(msg, epoch) {
+  if (epoch !== playbackEpoch) return;
+  state.currentAudio = null;
+  activePlayback = null;
+  syncPlaybackUi(msg, 'idle');
+}
+
+async function playPlaybackPart(msg, url, epoch, part) {
+  const audio = createPlaybackAudio(url);
+  state.currentAudio = audio;
+  activePlayback = { messageId: msg.id, part };
+
+  audio.onended = () => {
+    if (epoch !== playbackEpoch) return;
+    if (part === 'head') {
+      void continueWithTailAudio(msg, epoch);
+      return;
+    }
+    finishPlayback(msg, epoch);
+  };
+  audio.onerror = () => {
+    if (epoch !== playbackEpoch) return;
+    finishPlayback(msg, epoch);
+    showToast('Playback failed');
+  };
+
+  await waitForAudioReady(audio);
+  if (epoch !== playbackEpoch) return;
+
+  syncPlaybackUi(msg, 'playing');
+  await audio.play();
+}
+
+// The head chunk just finished: keep going with the rest of the audio,
+// waiting for its background fetch if it has not landed yet.
+async function continueWithTailAudio(msg, epoch) {
+  try {
+    if (!msg._audioTailUrl && msg._audioTailPromise) {
+      syncPlaybackUi(msg, 'loading');
+      await withTimeout(msg._audioTailPromise, 30000, 'Audio timed out — tap Listen again');
+    }
+    if (epoch !== playbackEpoch) return;
+    if (!msg._audioTailUrl) {
+      finishPlayback(msg, epoch);
+      return;
+    }
+    await playPlaybackPart(msg, msg._audioTailUrl, epoch, 'tail');
+  } catch (err) {
+    if (epoch !== playbackEpoch) return;
+    finishPlayback(msg, epoch);
+    if (err?.name !== 'AbortError') {
+      showToast(err?.message || 'Playback failed');
+    }
+  }
+}
+
 async function beginTranslationPlayback(msg, btn) {
   if (btn) btn.dataset.busy = '1';
   stopPlayback();
@@ -661,29 +784,8 @@ async function beginTranslationPlayback(msg, btn) {
 
     playbackEpoch++;
     const epoch = playbackEpoch;
-    const audio = createPlaybackAudio(msg.audioUrl);
-    state.currentAudio = audio;
-    activePlayback = { messageId: msg.id };
-
-    audio.onended = () => {
-      if (epoch !== playbackEpoch) return;
-      state.currentAudio = null;
-      activePlayback = null;
-      syncPlaybackUi(msg, 'idle');
-    };
-    audio.onerror = () => {
-      if (epoch !== playbackEpoch) return;
-      state.currentAudio = null;
-      activePlayback = null;
-      syncPlaybackUi(msg, 'idle');
-      showToast('Playback failed');
-    };
-
-    await waitForAudioReady(audio);
-    if (epoch !== playbackEpoch) return;
-
-    syncPlaybackUi(msg, 'playing');
-    await audio.play();
+    const part = msg._audioPartial ? 'head' : 'full';
+    await playPlaybackPart(msg, msg.audioUrl, epoch, part);
   } catch (err) {
     if (err?.name !== 'AbortError') {
       showToast(err?.message || 'Playback failed');
@@ -2743,7 +2845,10 @@ async function shareClonedAudio(msg, btn) {
     if (!msg.audioUrl) {
       await loadMessageAudio(msg);
     }
-    if (!msg.audioUrl) throw new Error('Audio not ready — try again');
+    if (msg._audioPartial && msg._audioTailPromise) {
+      await withTimeout(msg._audioTailPromise, 30000, 'Audio not ready — try again');
+    }
+    if (!msg.audioUrl || msg._audioPartial) throw new Error('Audio not ready — try again');
     revealAudioActions(msg);
 
     const blob = await blobFromAudioUrl(msg.audioUrl);
