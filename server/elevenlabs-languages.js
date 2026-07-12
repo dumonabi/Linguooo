@@ -1,27 +1,16 @@
 // ElevenLabs cloned-voice language routing.
-// v2: eleven_multilingual_v2 (29 languages). v3: eleven_v3 (70+ languages, incl. Thai).
+// Speed-first policy: cloned speech only runs on eleven_flash_v2_5 (~75ms
+// model latency, 32 languages). Languages outside that set fall back to the
+// OpenAI default voice, which is faster than the slow eleven_v3 model.
 
-export const ELEVEN_MODEL_V2 = 'eleven_multilingual_v2';
 export const ELEVEN_MODEL_V3 = 'eleven_v3';
+export const ELEVEN_MODEL_FLASH = 'eleven_flash_v2_5';
 
-export const CLONED_VOICE_V2_LANGUAGE_CODES = new Set([
-  'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'hi', 'hr', 'id',
-  'it', 'ja', 'ko', 'ms', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'ta', 'tl',
-  'tr', 'uk', 'zh',
-]);
-
-// App languages supported by eleven_v3 but not eleven_multilingual_v2.
-export const CLONED_VOICE_V3_LANGUAGE_CODES = new Set([
-  'af', 'as', 'az', 'be', 'bn', 'bs', 'ca', 'cy', 'et', 'fa', 'gl', 'gu', 'ha',
-  'he', 'hu', 'hy', 'is', 'jw', 'kk', 'kn', 'lb', 'ln', 'lt', 'lv', 'mk', 'ml',
-  'mr', 'ne', 'no', 'pa', 'ps', 'sd', 'sl', 'so', 'sr', 'sw', 'te', 'th', 'ur',
-  'vi',
-]);
-
-/** @deprecated Use union of v2 + v3 sets. */
+// Flash v2.5 covers every multilingual-v2 language plus hu/no/vi.
 export const CLONED_VOICE_LANGUAGE_CODES = new Set([
-  ...CLONED_VOICE_V2_LANGUAGE_CODES,
-  ...CLONED_VOICE_V3_LANGUAGE_CODES,
+  'ar', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'hi', 'hr', 'hu',
+  'id', 'it', 'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv',
+  'ta', 'tl', 'tr', 'uk', 'vi', 'zh',
 ]);
 
 const APP_ALIASES = {
@@ -50,21 +39,12 @@ export function toElevenLabsLanguageCode(code) {
 export function resolveCloneVoiceModel(langCode) {
   const mapped = resolveCloneVoiceLanguage(langCode);
   if (!mapped) return null;
-  if (CLONED_VOICE_V2_LANGUAGE_CODES.has(mapped)) return ELEVEN_MODEL_V2;
-  if (CLONED_VOICE_V3_LANGUAGE_CODES.has(mapped)) return ELEVEN_MODEL_V3;
+  if (CLONED_VOICE_LANGUAGE_CODES.has(mapped)) return ELEVEN_MODEL_FLASH;
   return null;
 }
 
 export function supportsClonedVoice(langCode) {
   return Boolean(resolveCloneVoiceModel(langCode));
-}
-
-export function listCloneVoiceV2LanguageCodes() {
-  return [...CLONED_VOICE_V2_LANGUAGE_CODES].sort();
-}
-
-export function listCloneVoiceV3LanguageCodes() {
-  return [...CLONED_VOICE_V3_LANGUAGE_CODES].sort();
 }
 
 export function listCloneVoiceLanguageCodes() {
@@ -73,7 +53,6 @@ export function listCloneVoiceLanguageCodes() {
 
 export function cloneVoiceLanguagesByModel() {
   return {
-    v2: listCloneVoiceV2LanguageCodes(),
-    v3: listCloneVoiceV3LanguageCodes(),
+    flash: listCloneVoiceLanguageCodes(),
   };
 }

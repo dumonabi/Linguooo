@@ -30,10 +30,9 @@ export async function setupApiMocks(page, options = {}) {
         body: JSON.stringify({
           ok: true,
           authRequired,
-          cloneVoiceLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt', 'th', 'vi'],
+          cloneVoiceLanguages: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt', 'vi'],
           cloneVoiceLanguagesByModel: {
-            v2: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt'],
-            v3: ['th', 'vi'],
+            flash: ['en', 'es', 'fr', 'de', 'ja', 'zh', 'it', 'pt', 'vi'],
           },
         }),
       });

@@ -10,7 +10,7 @@ import {
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
 import { buildRecordingBlob, getRecordingMimeType, isIosDevice } from './media-utils.js';
-import { formatCloneVoiceLanguageGroups } from './elevenlabs-languages.js';
+import { formatCloneVoiceLanguageList } from './elevenlabs-languages.js';
 import { loadLanguagesList } from './languages-service.js';
 import {
   getProfileMenuSelectionStorageKey,
@@ -986,7 +986,7 @@ async function renderMenuContent() {
   const state = getProfileState(user);
   const { maxSamples, sampleCount } = state;
   const savedCount = Math.min(sampleCount, maxSamples);
-  const cloneLanguageGroups = formatCloneVoiceLanguageGroups(voiceLang);
+  const cloneLanguageList = formatCloneVoiceLanguageList(voiceLang);
 
   panel.innerHTML = `
     <div class="user-profile-layout">
@@ -1107,12 +1107,7 @@ async function renderMenuContent() {
       >
         <span class="user-profile-clone-languages-label">${escapeHtml(ui.cloneVoiceLanguagesFootnote)}</span>
         <span class="user-profile-clone-languages-group">
-          <span class="user-profile-clone-languages-tier">${escapeHtml(ui.cloneVoiceLanguagesV2)}:</span>
-          ${escapeHtml(cloneLanguageGroups.v2)}
-        </span>
-        <span class="user-profile-clone-languages-group">
-          <span class="user-profile-clone-languages-tier">${escapeHtml(ui.cloneVoiceLanguagesV3)}:</span>
-          ${escapeHtml(cloneLanguageGroups.v3)}
+          ${escapeHtml(cloneLanguageList)}
         </span>
       </p>
       <div class="user-profile-recovery-wrap" id="user-profile-recovery-wrap" hidden>

@@ -1,5 +1,5 @@
 import {
-  ELEVEN_MODEL_V2,
+  ELEVEN_MODEL_FLASH,
   resolveCloneVoiceModel,
   toElevenLabsLanguageCode,
 } from './elevenlabs-languages.js';
@@ -63,7 +63,7 @@ export async function createVoiceClone({ name, description, samples }) {
 function resolveSpeechModelId(langCode) {
   const override = process.env.ELEVENLABS_MODEL_ID?.trim();
   if (override) return override;
-  return resolveCloneVoiceModel(langCode) || ELEVEN_MODEL_V2;
+  return resolveCloneVoiceModel(langCode) || ELEVEN_MODEL_FLASH;
 }
 
 // Per-request character limits (ElevenLabs docs): exceeding them returns
@@ -104,19 +104,25 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
   }
 
   const modelId = resolveSpeechModelId(langCode);
+  const isFlash = modelId === ELEVEN_MODEL_FLASH;
+
+  // style and speaker boost add generation latency and are not meaningful
+  // on the flash model, so they are only sent to the slower models.
   const payload = {
     text: clampTextForModel(text, modelId),
     model_id: modelId,
-    voice_settings: {
-      stability: 0.45,
-      similarity_boost: 0.8,
-      style: 0.15,
-      use_speaker_boost: true,
-    },
+    voice_settings: isFlash
+      ? { stability: 0.45, similarity_boost: 0.8 }
+      : {
+        stability: 0.45,
+        similarity_boost: 0.8,
+        style: 0.15,
+        use_speaker_boost: true,
+      },
   };
 
   const elevenLang = toElevenLabsLanguageCode(langCode);
-  if (modelId === 'eleven_v3' && elevenLang) {
+  if ((isFlash || modelId === 'eleven_v3') && elevenLang) {
     payload.language_code = elevenLang;
   }
 
