@@ -53,7 +53,7 @@ import {
   supportsClonedVoice,
 } from './elevenlabs-languages.js';
 import { waitUntil } from '@vercel/functions';
-import { splitSpeechText } from './speech-chunks.js';
+import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createSessionToken } from './session-token.js';
 import { isPersistentBlobEnabled } from './persistent-store.js';
 import {
@@ -249,14 +249,26 @@ function beginTranslationStream(res) {
 
 async function pipeTranslationStream(res, openai, rawText, lang1, lang2, context, { warmSpeech } = {}) {
   const writeLine = beginTranslationStream(res);
-  writeLine({ event: 'transcript', rawText });
 
   const preDetected = detectLanguageInPair(rawText, lang1, lang2);
+  const expectedTarget = preDetected ? (preDetected === lang1 ? lang2 : lang1) : null;
+
+  // Sharing the likely target language up front lets the client prefetch
+  // the first audio chunk while the translation is still streaming.
+  writeLine({ event: 'transcript', rawText, ...(expectedTarget ? { targetLanguage: expectedTarget } : {}) });
 
   let accumulated = '';
+  let headWarmed = false;
   const { truncated } = await translateTextStream(openai, rawText, lang1, lang2, context, (chunk) => {
     accumulated += chunk;
     writeLine({ event: 'delta', text: chunk });
+
+    // Once enough text has streamed, the head chunk is deterministic —
+    // start synthesizing it before the translation finishes.
+    if (!headWarmed && warmSpeech && expectedTarget && headIsStable(accumulated)) {
+      headWarmed = true;
+      warmSpeech(splitSpeechText(accumulated).head, expectedTarget);
+    }
   }, { detected: preDetected });
 
   if (truncated) {

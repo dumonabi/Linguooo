@@ -273,7 +273,11 @@ function defaultConverseResponse(index) {
 
 function buildConverseStreamBody(payload) {
   const lines = [];
-  lines.push(JSON.stringify({ event: 'transcript', rawText: payload.rawText }));
+  lines.push(JSON.stringify({
+    event: 'transcript',
+    rawText: payload.rawText,
+    targetLanguage: payload.targetLanguage,
+  }));
 
   const text = payload.translatedText || '';
   for (let i = 0; i < text.length; i += 2) {

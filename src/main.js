@@ -1,6 +1,6 @@
 import { createLangPicker, hideAllLangPickerCarets } from './lang-picker.js';
 import { listCloneVoiceLanguageCodes, supportsClonedVoice } from './elevenlabs-languages.js';
-import { splitSpeechText } from './speech-chunks.js';
+import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
@@ -124,11 +124,14 @@ function isPersonalVoiceReady() {
   return Boolean(getStoredUser()?.voiceReady);
 }
 
-function speakModeForMessage(msg) {
-  const lang = msg.targetLanguage;
+function speakModeForLang(lang) {
   if (!lang || !isPersonalVoiceReady()) return 'default';
   if (!supportsClonedVoice(lang)) return 'default';
   return 'clone';
+}
+
+function speakModeForMessage(msg) {
+  return speakModeForLang(msg.targetLanguage);
 }
 
 function syncMessageAudioCache(msg) {
@@ -500,7 +503,57 @@ function trackMessageAudioUrl(msg, url) {
   return url;
 }
 
+// Audio blobs fetched mid-stream, before the message object is finalized.
+const speakBlobPrefetch = new Map();
+
+function speakPrefetchKey(text, lang, mode, slot) {
+  return `${text}|${lang}|${mode}|${slot}`;
+}
+
+// Fires as soon as enough of the translation has streamed to lock in the
+// first audio chunk, so the sound is often already downloaded by the time
+// the translation finishes.
+function prefetchHeadAudioMidStream(message) {
+  if (message._headPrefetched) return;
+  const lang = message._expectedTarget;
+  if (!lang) return;
+  if (!headIsStable(message.translated)) return;
+
+  const { head } = splitSpeechText(message.translated);
+  message._headPrefetched = true;
+  const mode = speakModeForLang(lang);
+  const slot = activeSpeakProfileSlot();
+  const key = speakPrefetchKey(head, lang, mode, slot);
+  if (speakBlobPrefetch.has(key)) return;
+
+  // Only one translation streams at a time; drop any stale entry.
+  speakBlobPrefetch.clear();
+
+  const controller = new AbortController();
+  speakBlobPrefetch.set(
+    key,
+    fetchSpeakBlob({ targetLanguage: lang }, head, controller, { attempts: 1 })
+      .catch((err) => {
+        speakBlobPrefetch.delete(key);
+        throw err;
+      }),
+  );
+}
+
 async function fetchSpeakBlob(msg, text, controller, { attempts = 2 } = {}) {
+  const lang = msg.targetLanguage;
+  const mode = speakModeForMessage(msg);
+  const slot = activeSpeakProfileSlot();
+
+  const prefetched = speakBlobPrefetch.get(speakPrefetchKey(text, lang, mode, slot));
+  if (prefetched) {
+    try {
+      return await prefetched;
+    } catch {
+      // fall through to a fresh fetch
+    }
+  }
+
   let lastError;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -512,9 +565,9 @@ async function fetchSpeakBlob(msg, text, controller, { attempts = 2 } = {}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
-          lang: msg.targetLanguage,
-          voiceMode: speakModeForMessage(msg),
-          slot: activeSpeakProfileSlot(),
+          lang,
+          voiceMode: mode,
+          slot,
         }),
         signal: controller.signal,
       });
@@ -1836,10 +1889,33 @@ async function fetchTranscriptFromAudio({ blob, mimeType }) {
   return data.rawText?.trim() || '';
 }
 
+// If a warmed-up mic stream is not used by a recording within this window
+// (e.g. the tap turned into a scroll and the click never fired), close it so
+// the phone's "microphone in use" indicator does not stay on.
+const MIC_WARM_RELEASE_MS = 8000;
+let micWarmReleaseTimer = null;
+
+function scheduleWarmMicRelease() {
+  clearTimeout(micWarmReleaseTimer);
+  micWarmReleaseTimer = setTimeout(() => {
+    micWarmReleaseTimer = null;
+    if (state.isRecording || state.stoppingRecording || isRecordingUiActive()) return;
+    teardownMicMeter();
+    releaseMicTracks();
+  }, MIC_WARM_RELEASE_MS);
+}
+
+function cancelWarmMicRelease() {
+  clearTimeout(micWarmReleaseTimer);
+  micWarmReleaseTimer = null;
+}
+
 function warmMicForRecording() {
   if (!languagesReady() || state.isProcessing || state.isRecording || state.stoppingRecording) return;
   primeMicAudioOnGesture();
-  void ensureMicStream().catch(() => {});
+  void ensureMicStream()
+    .then(() => scheduleWarmMicRelease())
+    .catch(() => {});
 }
 
 async function ensureMicStream() {
@@ -2123,7 +2199,7 @@ function startTranslationLoadingDots(card, message) {
   });
 }
 
-function showStreamingTranscript(rawText, requestId) {
+function showStreamingTranscript(rawText, requestId, expectedTarget = null) {
   if (requestId !== undefined && requestId !== latestTranslationRequest) return;
 
   stopComposeLoadingDots();
@@ -2131,6 +2207,7 @@ function showStreamingTranscript(rawText, requestId) {
   const existing = state.messages[0];
   if (existing?._streaming && existing.id === `stream-${requestId}`) {
     existing.original = rawText;
+    if (expectedTarget) existing._expectedTarget = expectedTarget;
     return;
   }
 
@@ -2140,6 +2217,7 @@ function showStreamingTranscript(rawText, requestId) {
     translated: '',
     detectedLanguage: null,
     targetLanguage: null,
+    _expectedTarget: expectedTarget,
     audioUrl: null,
     _streaming: true,
     _loading: true,
@@ -2173,6 +2251,8 @@ function appendStreamingTranslation(text, requestId) {
     translatedEl.textContent = message.translated;
     translatedEl.classList.add('is-streaming');
   }
+
+  prefetchHeadAudioMidStream(message);
 }
 
 function kickoffTranslationAudio(doneData, requestId) {
@@ -2192,7 +2272,7 @@ function handleStreamEvent(evt, requestId) {
   if (!evt?.event) return;
 
   if (evt.event === 'transcript') {
-    showStreamingTranscript(evt.rawText, requestId);
+    showStreamingTranscript(evt.rawText, requestId, evt.targetLanguage || null);
     return;
   }
 
@@ -2667,6 +2747,7 @@ async function beginRecording() {
     state.recordingStartedAt = Date.now();
     state.isRecording = true;
     state.mediaStream = stream;
+    cancelWarmMicRelease();
 
     updateComposeState();
     startRecordingProgress();
@@ -3100,6 +3181,14 @@ function bindEvents() {
     })();
   });
   window.addEventListener('pagehide', releaseMic);
+  // iOS often skips pagehide when switching apps; close any idle mic stream
+  // so the OS "microphone in use" indicator does not stay on.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'hidden') return;
+    if (state.isRecording || state.stoppingRecording) return;
+    teardownMicMeter();
+    releaseMicTracks();
+  });
 }
 
 init();
