@@ -1,0 +1,20 @@
+name: Keep warm
+
+on:
+  schedule:
+    # GitHub often delays scheduled runs by a few minutes, so ping at the
+    # smallest allowed interval and twice per run to keep the serverless
+    # instance (and its in-memory TTS cache) from freezing between runs.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping production health
+        run: |
+          curl -fsS --max-time 25 "https://lingo-self.vercel.app/api/health" >/dev/null
+          sleep 120
+          curl -fsS --max-time 25 "https://lingo-self.vercel.app/api/health" >/dev/null
