@@ -573,7 +573,10 @@ html.user-profile-menu-open body {
   white-space: nowrap;
   overflow: hidden;
   text-align: center;
+  border: none;
   line-height: var(--lang-bar-rect-height);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-weight: 700;
   font-size: var(--lang-bar-text-size);
   letter-spacing: -0.04em;
 }
@@ -973,6 +976,17 @@ html.user-profile-menu-open body {
   overflow-wrap: break-word;
 }
 
+/* Compose mirrors must render text exactly like .compose-input so caret and
+   selection measurements line up — keep these metrics in sync with it. */
+.compose-input-wrap > .compose-caret-mirror,
+.compose-input-wrap > .compose-selection-mirror {
+  width: 100%;
+  border: none;
+  font: inherit;
+  line-height: var(--ui-text-leading);
+  padding: 0.9rem 1rem 0.55rem;
+}
+
 /* iOS Safari ignores ::selection inside a textarea, so the selection is
    painted by a mirror overlay that sits on top of the (then transparent)
    textarea text. Only activated on iOS devices. */
@@ -1194,6 +1208,15 @@ html.user-profile-menu-open body {
   min-width: max-content;
   will-change: transform;
   margin-inline: auto;
+  transform: translateX(0);
+}
+
+/* One step of the recording waveform conveyor; removing the class snaps the
+   strip back instantly (no transition on the base rule). Keep the duration
+   in sync with MIC_WAVE_SHIFT_MS in mic-wave.js. */
+.compose-level-scroll.is-shifting {
+  transition: transform 46ms linear;
+  transform: translateX(calc(-1 * var(--mic-wave-step, 5px)));
 }
 
 .compose-recording-cancel,
@@ -1255,6 +1278,9 @@ html.user-profile-menu-open body {
   stroke: var(--accent-light);
   stroke-width: 3;
   stroke-linecap: round;
+  /* Circumference of the r=19 circle; JS animates stroke-dashoffset from here. */
+  stroke-dasharray: 119.381;
+  stroke-dashoffset: 119.381;
 }
 
 .compose-recording-send-icon {
@@ -2772,7 +2798,10 @@ html.user-profile-menu-open body {
   text-align: center;
   padding: 0 0.35rem;
   box-sizing: border-box;
+  border: none;
   line-height: var(--lang-bar-text-leading, 1.12);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  font-weight: 700;
   font-size: var(--lang-bar-text-size);
   letter-spacing: -0.04em;
 }

@@ -253,18 +253,9 @@ function createBarSearchLangPicker(container, {
     }
 
     caret.hidden = false;
+    // The mirror's text metrics track the input via CSS
+    // (.lang-picker-bar-field .lang-picker-caret-mirror).
     const style = getComputedStyle(input);
-    mirror.style.width = `${input.clientWidth}px`;
-    mirror.style.font = style.font;
-    mirror.style.fontSize = style.fontSize;
-    mirror.style.fontFamily = style.fontFamily;
-    mirror.style.fontWeight = style.fontWeight;
-    mirror.style.lineHeight = style.lineHeight;
-    mirror.style.letterSpacing = style.letterSpacing;
-    mirror.style.textAlign = style.textAlign;
-    mirror.style.padding = style.padding;
-    mirror.style.border = 'none';
-    mirror.style.boxSizing = style.boxSizing;
 
     const caretPos = input.selectionStart ?? input.value.length;
     const textBefore = input.value.slice(0, caretPos);
@@ -552,18 +543,9 @@ export function createCollapsibleNumberedSquareGrid(container, {
     }
 
     caret.hidden = false;
+    // The mirror's text metrics track the input via CSS
+    // (.lang-picker-square-option-edit-square .lang-picker-caret-mirror).
     const style = getComputedStyle(input);
-    mirror.style.width = `${input.clientWidth}px`;
-    mirror.style.font = style.font;
-    mirror.style.fontSize = style.fontSize;
-    mirror.style.fontFamily = style.fontFamily;
-    mirror.style.fontWeight = style.fontWeight;
-    mirror.style.lineHeight = style.lineHeight;
-    mirror.style.letterSpacing = style.letterSpacing;
-    mirror.style.textAlign = style.textAlign;
-    mirror.style.padding = style.padding;
-    mirror.style.border = 'none';
-    mirror.style.boxSizing = style.boxSizing;
 
     const caretPos = input.selectionStart ?? input.value.length;
     const textBefore = input.value.slice(0, caretPos);

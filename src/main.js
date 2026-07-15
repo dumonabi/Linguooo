@@ -910,10 +910,6 @@ async function init() {
   bindPendingQueue();
   bindDictation();
   checkMicSupport();
-  if (recordingSendProgressFill) {
-    recordingSendProgressFill.style.strokeDasharray = String(RECORDING_SEND_RING_CIRCUMFERENCE);
-    recordingSendProgressFill.style.strokeDashoffset = String(RECORDING_SEND_RING_CIRCUMFERENCE);
-  }
   resizeDictationInput();
   updateComposeState();
   scheduleComposeFocus();
@@ -1006,6 +1002,15 @@ async function loadLanguages() {
   syncPickerLanguages();
 }
 
+// If the startup fetch of /api/languages failed (flaky mobile network, cold
+// server), the pickers are stuck filtering the 10-language offline fallback
+// and typing a letter shows a single suggestion. Retry when the user starts
+// searching so the full list is available.
+function handlePickerFocusEdit() {
+  void ensureLanguagesLoaded();
+  syncComposeCaret();
+}
+
 function initPickers() {
   restoreSavedLanguages();
 
@@ -1015,7 +1020,7 @@ function initPickers() {
     circle: true,
     inBar: true,
     placeholder: '',
-    onFocusEdit: syncComposeCaret,
+    onFocusEdit: handlePickerFocusEdit,
     onChange: (code) => {
       state.lang1 = code;
       if (state.lang1 === state.lang2) {
@@ -1033,7 +1038,7 @@ function initPickers() {
     circle: true,
     inBar: true,
     placeholder: '',
-    onFocusEdit: syncComposeCaret,
+    onFocusEdit: handlePickerFocusEdit,
     onChange: (code) => {
       state.lang2 = code;
       if (state.lang1 === state.lang2) {
@@ -1423,27 +1428,6 @@ function ensureComposeCaretMirror() {
   return composeCaretMirrorEl;
 }
 
-function syncMirrorStyles(mirror, ta, style) {
-  // Use the fractional width: clientWidth rounds down to whole pixels, which
-  // can make the mirror wrap a word one line later than the real textarea on
-  // mobile, leaving the fake caret on the previous line while typed letters
-  // continue below.
-  mirror.style.width = `${ta.getBoundingClientRect().width}px`;
-  mirror.style.font = style.font;
-  mirror.style.fontSize = style.fontSize;
-  mirror.style.fontFamily = style.fontFamily;
-  mirror.style.fontWeight = style.fontWeight;
-  mirror.style.lineHeight = style.lineHeight;
-  mirror.style.letterSpacing = style.letterSpacing;
-  mirror.style.padding = style.padding;
-  mirror.style.border = style.border;
-  mirror.style.boxSizing = style.boxSizing;
-  mirror.style.whiteSpace = 'pre-wrap';
-  mirror.style.wordWrap = 'break-word';
-  mirror.style.overflowWrap = 'break-word';
-  mirror.style.wordBreak = style.wordBreak;
-}
-
 function syncComposeCaret() {
   const wrap = composeInputWrapEl;
   const ta = dictationInputEl;
@@ -1461,9 +1445,10 @@ function syncComposeCaret() {
 
   caret.hidden = false;
 
+  // The mirror's text metrics are kept identical to the textarea via CSS
+  // (.compose-input-wrap > .compose-caret-mirror).
   const mirror = ensureComposeCaretMirror();
   const style = getComputedStyle(ta);
-  syncMirrorStyles(mirror, ta, style);
 
   const caretPos = focused ? (ta.selectionStart ?? ta.value.length) : ta.value.length;
   const textBefore = ta.value.slice(0, caretPos);
@@ -1955,8 +1940,8 @@ function cancelRecordingProgressRaf() {
 }
 
 function resetRecordingSendProgress() {
-  if (!recordingSendProgressFill) return;
-  recordingSendProgressFill.style.strokeDashoffset = String(RECORDING_SEND_RING_CIRCUMFERENCE);
+  // Clearing the inline value falls back to the CSS default (full offset).
+  recordingSendProgressFill?.style.removeProperty('stroke-dashoffset');
 }
 
 function updateRecordingSendProgress(pct) {
@@ -2137,8 +2122,6 @@ function syncComposeLoadingDots() {
   if (!wrap || !ta) return;
 
   const mirror = ensureComposeCaretMirror();
-  const style = getComputedStyle(ta);
-  syncMirrorStyles(mirror, ta, style);
 
   const textBefore = ta.value;
   const needsSpace = textBefore.length > 0 && !/\s$/.test(textBefore);
@@ -3143,7 +3126,6 @@ function bindComposeSelectionOverlay() {
     }
 
     const el = ensureOverlay();
-    syncMirrorStyles(el, ta, getComputedStyle(ta));
 
     const selected = document.createElement('span');
     selected.className = 'compose-selection-range';

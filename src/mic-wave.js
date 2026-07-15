@@ -16,7 +16,6 @@ export function createMicWave() {
   let micWaveLastShift = 0;
   let micWaveShiftBusy = false;
   let micWaveVisibleCount = MIC_WAVE_MIN_VISIBLE;
-  let micWaveBarStep = MIC_BAR_WIDTH + MIC_BAR_GAP;
   let waveResizeObserver = null;
 
   function getMicMeterContext() {
@@ -62,8 +61,8 @@ export function createMicWave() {
     }
 
     micWaveVisibleCount = visible;
-    micWaveBarStep = step;
     levelEl.style.setProperty('--compose-wave-visible', String(visible));
+    levelEl.style.setProperty('--mic-wave-step', `${step}px`);
     levelEl.innerHTML = '';
     micWaveBarEls.length = 0;
     micWaveScrollEl = document.createElement('span');
@@ -144,8 +143,7 @@ export function createMicWave() {
     micWaveScrollEl.appendChild(first);
     micWaveBarEls.push(first);
 
-    micWaveScrollEl.style.transition = 'none';
-    micWaveScrollEl.style.transform = 'translateX(0)';
+    micWaveScrollEl.classList.remove('is-shifting');
     micWaveShiftBusy = false;
   }
 
@@ -159,8 +157,8 @@ export function createMicWave() {
     const incoming = micWaveBarEls[micWaveBarEls.length - 1];
     incoming.style.setProperty('--bar-scale', sample.toFixed(3));
 
-    micWaveScrollEl.style.transition = `transform ${MIC_WAVE_SHIFT_MS}ms linear`;
-    micWaveScrollEl.style.transform = `translateX(-${micWaveBarStep}px)`;
+    // The slide itself lives in CSS (.compose-level-scroll.is-shifting).
+    micWaveScrollEl.classList.add('is-shifting');
 
     window.setTimeout(finishMicWaveShift, MIC_WAVE_SHIFT_MS);
   }
@@ -173,10 +171,7 @@ export function createMicWave() {
     micWaveBarEls.forEach((bar) => {
       bar.style.setProperty('--bar-scale', String(MIC_BAR_IDLE));
     });
-    if (micWaveScrollEl) {
-      micWaveScrollEl.style.transition = 'none';
-      micWaveScrollEl.style.transform = 'translateX(0)';
-    }
+    micWaveScrollEl?.classList.remove('is-shifting');
   }
 
   function teardownMicMeter() {
