@@ -2039,17 +2039,51 @@ html.user-profile-menu-open body {
   padding: 1.5rem;
   background: rgba(6, 12, 10, 0.88);
   backdrop-filter: blur(8px);
+  /* Cards taller than tiny viewports (e.g. a watch browser) must scroll. */
+  overflow-y: auto;
 }
 
 .auth-gate[hidden] { display: none; }
 
 .auth-card {
-  width: min(100%, 360px);
+  /* Same portrait-first sizing as the app: full width, capped at 4/5 of the
+     viewport height. */
+  width: min(100%, var(--layout-ref));
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1.75rem 1.5rem;
   text-align: center;
+  /* Centers like flex alignment but never clips when the card overflows. */
+  margin: auto;
+}
+
+/* Tiny screens (Apple Watch): the watch browser scrolls the document, not
+   nested overflow containers, and clips position: fixed overlays. Put the
+   auth gate into normal flow and hide the app behind it so the whole page
+   scrolls with the crown. */
+@media (max-width: 330px) {
+  #auth-gate {
+    position: static;
+    display: block;
+    min-height: 100dvh;
+    padding: 0.4rem;
+    background: #000000;
+    backdrop-filter: none;
+    overflow: visible;
+  }
+
+  #auth-gate[hidden] {
+    display: none;
+  }
+
+  .auth-card {
+    padding: 1rem 0.75rem;
+  }
+
+  html.auth-gate-open #app {
+    display: none;
+  }
 }
 
 .auth-logo {
@@ -2109,6 +2143,98 @@ html.user-profile-menu-open body {
 .auth-passphrase-wrap {
   position: relative;
   margin-bottom: 0.85rem;
+}
+
+.auth-passphrase-wrap .auth-textarea {
+  padding-bottom: 3rem;
+}
+
+.auth-input-tools {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.55rem;
+  display: flex;
+  gap: 0.4rem;
+  z-index: 2;
+}
+
+.auth-input-tool {
+  width: 2.2rem;
+  height: 2.2rem;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-input-tool svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.auth-input-tool:hover,
+.auth-input-tool.is-active {
+  color: var(--accent-light);
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.auth-input-tool.is-listening {
+  color: #04140a;
+  background: var(--accent-light);
+  border-color: var(--accent-light);
+  animation: auth-mic-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes auth-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0); }
+}
+
+.auth-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.auth-keypad[hidden] {
+  display: none;
+}
+
+.auth-keypad-key {
+  min-height: 2.9rem;
+  padding: 0.4rem 0;
+  font: inherit;
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.auth-keypad-key:active {
+  background: rgba(74, 222, 128, 0.16);
+}
+
+.auth-keypad-key.is-cycling {
+  color: var(--accent-light);
+  border-color: rgba(74, 222, 128, 0.6);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.auth-keypad-space {
+  grid-column: span 3;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
 }
 
 .auth-word-list {

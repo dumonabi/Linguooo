@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- Render at the real watch viewport instead of a scaled-down 320px page. -->
+    <meta name="disable-adaptations" content="watch" />
     <meta name="theme-color" content="#000000" />
     <meta name="description" content="Lingu.ooo — speak in either language, AI translates automatically" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -181,8 +183,35 @@
                 placeholder="word word word …"
                 required
               ></textarea>
+              <div class="auth-input-tools">
+                <button
+                  type="button"
+                  class="auth-input-tool"
+                  id="auth-seed-mic"
+                  aria-label="Dictate recovery phrase"
+                  title="Dictate recovery phrase"
+                  aria-pressed="false"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.03c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"/>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="auth-input-tool"
+                  id="auth-seed-keypad-toggle"
+                  aria-label="Phone keypad input"
+                  title="Phone keypad input"
+                  aria-expanded="false"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 19c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 7 4 7.9 4 9s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 1 4 1.9 4 3s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-6 8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+                  </svg>
+                </button>
+              </div>
               <ul class="auth-word-list" id="auth-word-list" hidden role="listbox" aria-label="BIP39 words"></ul>
             </div>
+            <div class="auth-keypad" id="auth-seed-keypad" hidden></div>
             <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
           </form>
         </div>

@@ -5,7 +5,10 @@ import {
   setStoredUser,
 } from './auth.js';
 import { attachBip39WordAutocomplete } from './bip39-word-autocomplete.js';
+import { attachSeedInputExtras } from './seed-input-extras.js';
 import { $ } from './dom-utils.js';
+
+let seedExtras = null;
 
 function showError(errorEl, message) {
   if (!errorEl) return;
@@ -49,6 +52,8 @@ function showRecoveryReveal(gate, phrase) {
 }
 
 async function completeAuth({ gate, passphrase, user, sessionToken, onSuccess, onUnauthorized }) {
+  seedExtras?.stopVoice();
+  seedExtras?.hideKeypad();
   const normalized = normalizeClientPassphrase(passphrase);
   setAuthToken(sessionToken || normalized);
   if (user) {
@@ -56,6 +61,7 @@ async function completeAuth({ gate, passphrase, user, sessionToken, onSuccess, o
     if (normalized) saveRecoveryPhrase(user.id, normalized);
   }
   gate.hidden = true;
+  document.documentElement.classList.remove('auth-gate-open');
   if (onUnauthorized) {
     window.removeEventListener('lingo:unauthorized', onUnauthorized);
   }
@@ -87,6 +93,13 @@ export function mountAuthGate({
       passphraseInput,
       $('#auth-word-list', gate),
     );
+    seedExtras = attachSeedInputExtras({
+      textarea: passphraseInput,
+      micBtn: $('#auth-seed-mic', gate),
+      keypadToggle: $('#auth-seed-keypad-toggle', gate),
+      keypadEl: $('#auth-seed-keypad', gate),
+      onError: (message) => showError(errorEl, message),
+    });
   }
 
   gate.querySelectorAll('[data-auth-tab]').forEach((button) => {
@@ -203,6 +216,7 @@ export function mountAuthGate({
 export function openAuthGate(gate) {
   if (!gate) return;
   gate.hidden = false;
+  document.documentElement.classList.add('auth-gate-open');
   showError($('#auth-error', gate), '');
   setActiveTab(gate, 'signin');
   $('#auth-passphrase-input', gate)?.focus();
@@ -210,6 +224,8 @@ export function openAuthGate(gate) {
 
 export function resetAuthGate(gate) {
   if (!gate) return;
+  seedExtras?.stopVoice();
+  seedExtras?.hideKeypad();
   const input = $('#auth-passphrase-input', gate);
   if (input) input.value = '';
   const superPasswordInput = $('#auth-super-password', gate);
