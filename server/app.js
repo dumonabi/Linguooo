@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import multer from 'multer';
 import OpenAI, { toFile } from 'openai';
@@ -55,7 +56,7 @@ import {
 import { waitUntil } from '@vercel/functions';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createSessionToken } from './session-token.js';
-import { isPersistentBlobEnabled } from './persistent-store.js';
+import { isPersistentBlobEnabled, readBuffer, writeBuffer } from './persistent-store.js';
 import {
   alignTranslationFields,
   detectLanguageFromTranslation,
@@ -421,6 +422,35 @@ async function generateSpeechBuffer(openai, input, lang, voiceId = null) {
 // and the client's /api/speak prefetch share a single TTS request.
 const ttsPending = new Map();
 
+// The in-memory cache is per serverless instance. On Vercel the /api/speak
+// request often lands on a different instance than the /api/translate that
+// warmed the audio, making the warm-up useless. A Blob-backed second level
+// lets every instance reuse pre-generated audio (~0.1s read vs ~2s TTS).
+function ttsBlobKey(cacheKey) {
+  return `tts-cache/${crypto.createHash('sha256').update(cacheKey).digest('hex')}.mp3`;
+}
+
+function persistTtsBlob(cacheKey, buffer) {
+  if (!isPersistentBlobEnabled()) return;
+  const write = writeBuffer(ttsBlobKey(cacheKey), buffer, 'audio/mpeg').catch((err) => {
+    console.warn('TTS blob write failed:', err?.message || err);
+  });
+  try {
+    waitUntil(write);
+  } catch {
+    // Outside a Vercel request context (local dev) this is a no-op.
+  }
+}
+
+async function readTtsBlob(cacheKey) {
+  if (!isPersistentBlobEnabled()) return null;
+  try {
+    return await readBuffer(ttsBlobKey(cacheKey));
+  } catch {
+    return null;
+  }
+}
+
 function generateSpeech(openai, text, lang, voiceId = null) {
   const input = prepareTextForSpeech(text, lang);
   if (!input) {
@@ -434,14 +464,20 @@ function generateSpeech(openai, text, lang, voiceId = null) {
   const pending = ttsPending.get(cacheKey);
   if (pending) return pending;
 
-  const promise = generateSpeechBuffer(openai, input, lang, voiceId)
-    .then((buffer) => {
-      writeTtsCache(cacheKey, buffer);
-      return buffer;
-    })
-    .finally(() => {
-      ttsPending.delete(cacheKey);
-    });
+  const promise = (async () => {
+    const blobHit = await readTtsBlob(cacheKey);
+    if (blobHit?.length) {
+      writeTtsCache(cacheKey, blobHit);
+      return blobHit;
+    }
+
+    const buffer = await generateSpeechBuffer(openai, input, lang, voiceId);
+    writeTtsCache(cacheKey, buffer);
+    persistTtsBlob(cacheKey, buffer);
+    return buffer;
+  })().finally(() => {
+    ttsPending.delete(cacheKey);
+  });
   ttsPending.set(cacheKey, promise);
   return promise;
 }

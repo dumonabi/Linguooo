@@ -13,6 +13,26 @@ const LEGACY_MIGRATION_SLOT = 1;
 const MAX_VOICE_SAMPLES = 6;
 const VOICE_TARGET_DURATION_MS = 90_000;
 
+// Profile metadata lives in Blob storage, which costs a network round-trip
+// on every read. /api/speak and the TTS warm-up read the profile on each
+// request, so keep a short-lived in-memory copy per instance.
+const profileCache = new Map();
+const PROFILE_CACHE_TTL_MS = 60_000;
+
+function readProfileCache(key) {
+  const hit = profileCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > PROFILE_CACHE_TTL_MS) {
+    profileCache.delete(key);
+    return null;
+  }
+  return hit.profile;
+}
+
+function writeProfileCache(key, profile) {
+  profileCache.set(key, { profile, at: Date.now() });
+}
+
 function slotPrefix(userId, slotNumber) {
   return `voices/${userId}/slots/${slotNumber}`;
 }
@@ -91,6 +111,7 @@ async function migrateLegacyProfile(userId) {
 async function writeMeta(userId, slotNumber, meta) {
   meta.updatedAt = Date.now();
   await writeText(metaKey(userId, slotNumber), JSON.stringify(meta, null, 2));
+  writeProfileCache(metaKey(userId, slotNumber), meta);
 }
 
 export { MAX_VOICE_SAMPLES, VOICE_TARGET_DURATION_MS };
@@ -103,18 +124,18 @@ export async function getVoiceProfile(userId, slotNumber) {
   const slot = validateProfileSlot(slotNumber);
   const key = metaKey(userId, slot);
 
-  let profile = await readMetaFile(key);
-  if (profile) return profile;
+  const cached = readProfileCache(key);
+  if (cached) return cached;
 
-  if (slot === LEGACY_MIGRATION_SLOT) {
+  let profile = await readMetaFile(key);
+  if (!profile && slot === LEGACY_MIGRATION_SLOT) {
     const migrated = await migrateLegacyProfile(userId);
-    if (migrated) {
-      profile = await readMetaFile(key);
-      if (profile) return profile;
-    }
+    if (migrated) profile = await readMetaFile(key);
   }
 
-  return emptyProfile();
+  const resolved = profile || emptyProfile();
+  writeProfileCache(key, resolved);
+  return resolved;
 }
 
 export async function listVoiceSampleBuffers(userId, slotNumber) {
@@ -210,6 +231,7 @@ export async function clearAllVoiceSamples(userId, slotNumber) {
 export async function deleteVoiceProfileSlot(userId, slotNumber) {
   const slot = validateProfileSlot(slotNumber);
   await deletePrefix(`${slotPrefix(userId, slot)}/`);
+  profileCache.delete(metaKey(userId, slot));
   return emptyProfile();
 }
 

@@ -126,7 +126,9 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
     payload.language_code = elevenLang;
   }
 
-  const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}`, {
+  // 64 kbps halves the payload vs the 128 kbps default; for speech the
+  // quality difference is inaudible and the download reaches the phone sooner.
+  const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}?output_format=mp3_44100_64`, {
     method: 'POST',
     headers: authHeaders({
       'Content-Type': 'application/json',
