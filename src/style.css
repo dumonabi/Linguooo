@@ -2146,26 +2146,39 @@ html.user-profile-menu-open body {
 }
 
 .auth-passphrase-wrap .auth-textarea {
-  padding-bottom: 3rem;
+  padding-bottom: 4.2rem;
 }
 
+/* On watch-sized screens the textarea is swapped for a single-line input
+   (watchOS Quickboard mishandles textareas). An input centers its text in
+   the content box, so it needs extra height to keep the text visible above
+   the tools row. */
+.auth-passphrase-wrap input.auth-textarea {
+  min-height: 7rem;
+  resize: none;
+}
+
+/* The three input tools (mic, keypad, binary squares) span the full width of
+   the box with big touch targets — the phrase is often entered on a watch. */
 .auth-input-tools {
   position: absolute;
+  left: 0.55rem;
   right: 0.55rem;
   bottom: 0.55rem;
   display: flex;
-  gap: 0.4rem;
+  gap: 0.5rem;
   z-index: 2;
 }
 
 .auth-input-tool {
-  width: 2.2rem;
-  height: 2.2rem;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 3.1rem;
   padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text-muted);
@@ -2173,8 +2186,15 @@ html.user-profile-menu-open body {
 }
 
 .auth-input-tool svg {
-  width: 1.2rem;
-  height: 1.2rem;
+  width: 1.7rem;
+  height: 1.7rem;
+}
+
+.auth-input-tool-text {
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: 0.02em;
 }
 
 .auth-input-tool:hover,
@@ -2235,6 +2255,183 @@ html.user-profile-menu-open body {
   grid-column: span 3;
   color: var(--text-muted);
   letter-spacing: 0.04em;
+}
+
+/* Binary seed grid (ported from bip.lol, laid out like the app's big
+   quarter-width frames): one word at a time — 12 frames, 4 per row. The
+   first 11 are the word's bits, the free 12th frame shows the word's number,
+   and the word itself is written in a row above the grid. */
+.auth-binary,
+.auth-numeric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+  text-align: left;
+}
+
+.auth-binary[hidden],
+.auth-numeric[hidden] {
+  display: none;
+}
+
+/* The current word, revealed only once it has been entered. Reserves its
+   line so the grid does not jump. */
+.auth-bit-preview {
+  min-height: 1.15em;
+  color: var(--accent-light);
+  font-weight: 700;
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
+  line-height: 1.15;
+  padding-left: 2px;
+}
+
+.auth-bit-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.auth-bit,
+.auth-bit-filler {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font);
+  font-weight: 700;
+  /* Frame is a quarter of the card width; the glyph scales with it. */
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.45);
+  line-height: 1;
+  color: var(--accent-light);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.auth-bit:active {
+  transform: scale(0.94);
+}
+
+.auth-bit.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+
+.auth-bit-filler {
+  border-style: dashed;
+  background: transparent;
+  cursor: default;
+}
+
+/* The word's number fills the free frame; longer numbers shrink to span its
+   full width. */
+.auth-bit-filler[data-len='3'] {
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
+}
+
+.auth-bit-filler[data-len='4'] {
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.25);
+}
+
+/* Wizard navigation: a small ‹ to go back plus a big continue button, laid
+   on the same 4-column grid as the frames. */
+.auth-bit-nav {
+  display: grid;
+  grid-template-columns: 1fr 3fr;
+  gap: 4px;
+}
+
+.auth-bit-back,
+.auth-bit-next {
+  min-height: calc((var(--layout-ref) - 3rem) / 4 * 0.6);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.26);
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.auth-bit-back {
+  color: var(--text-muted);
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.34);
+}
+
+.auth-bit-back:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.auth-bit-next {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+
+.auth-bit-next:active,
+.auth-bit-back:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+/* Numeric wizard: the typed number with its live word, above a phone-style
+   digit pad (1-9 in three rows, then 0 in the middle with delete beside). */
+.auth-num-display {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-height: 1.15em;
+  line-height: 1.15;
+  padding-left: 2px;
+  font-weight: 700;
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
+}
+
+.auth-num-value {
+  color: var(--text);
+}
+
+.auth-num-word {
+  color: var(--accent-light);
+}
+
+.auth-num-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.auth-num-key {
+  min-height: calc((var(--layout-ref) - 3rem) / 4 * 0.62);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.3);
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.auth-num-key:active {
+  transform: scale(0.96);
+  border-color: rgba(74, 222, 128, 0.6);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.auth-num-delete {
+  color: var(--text-muted);
 }
 
 .auth-word-list {

@@ -208,10 +208,34 @@
                     <path d="M12 19c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 7 4 7.9 4 9s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 1 4 1.9 4 3s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-6 8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
                   </svg>
                 </button>
+                <button
+                  type="button"
+                  class="auth-input-tool"
+                  id="auth-seed-numeric-toggle"
+                  aria-label="Word number input"
+                  title="Word number input"
+                  aria-expanded="false"
+                >
+                  <span class="auth-input-tool-text" aria-hidden="true">123</span>
+                </button>
+                <button
+                  type="button"
+                  class="auth-input-tool"
+                  id="auth-seed-binary-toggle"
+                  aria-label="Binary squares input"
+                  title="Binary squares input"
+                  aria-expanded="false"
+                >
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8z"/>
+                  </svg>
+                </button>
               </div>
               <ul class="auth-word-list" id="auth-word-list" hidden role="listbox" aria-label="BIP39 words"></ul>
             </div>
             <div class="auth-keypad" id="auth-seed-keypad" hidden></div>
+            <div class="auth-numeric" id="auth-seed-numeric" hidden></div>
+            <div class="auth-binary" id="auth-seed-binary" hidden></div>
             <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
           </form>
         </div>

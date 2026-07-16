@@ -5,7 +5,7 @@ import {
   setStoredUser,
 } from './auth.js';
 import { attachBip39WordAutocomplete } from './bip39-word-autocomplete.js';
-import { attachSeedInputExtras } from './seed-input-extras.js';
+import { attachSeedInputExtras, swapTextareaForWatchInput } from './seed-input-extras.js';
 import { $ } from './dom-utils.js';
 
 let seedExtras = null;
@@ -53,7 +53,7 @@ function showRecoveryReveal(gate, phrase) {
 
 async function completeAuth({ gate, passphrase, user, sessionToken, onSuccess, onUnauthorized }) {
   seedExtras?.stopVoice();
-  seedExtras?.hideKeypad();
+  seedExtras?.hidePanels();
   const normalized = normalizeClientPassphrase(passphrase);
   setAuthToken(sessionToken || normalized);
   if (user) {
@@ -77,7 +77,9 @@ export function mountAuthGate({
 
   const signInForm = $('#auth-signin-form', gate);
   const registerForm = $('#auth-register-form', gate);
-  const passphraseInput = $('#auth-passphrase-input', gate);
+  // On watch-sized screens the textarea is swapped for a single-line input
+  // before anything binds to it (watchOS Quickboard mishandles textareas).
+  const passphraseInput = swapTextareaForWatchInput($('#auth-passphrase-input', gate));
   const superPasswordInput = $('#auth-super-password', gate);
   const errorEl = $('#auth-error', gate);
   const copyBtn = $('#auth-copy-mnemonic', gate);
@@ -98,6 +100,10 @@ export function mountAuthGate({
       micBtn: $('#auth-seed-mic', gate),
       keypadToggle: $('#auth-seed-keypad-toggle', gate),
       keypadEl: $('#auth-seed-keypad', gate),
+      numericToggle: $('#auth-seed-numeric-toggle', gate),
+      numericEl: $('#auth-seed-numeric', gate),
+      binaryToggle: $('#auth-seed-binary-toggle', gate),
+      binaryEl: $('#auth-seed-binary', gate),
       onError: (message) => showError(errorEl, message),
     });
   }
@@ -225,7 +231,7 @@ export function openAuthGate(gate) {
 export function resetAuthGate(gate) {
   if (!gate) return;
   seedExtras?.stopVoice();
-  seedExtras?.hideKeypad();
+  seedExtras?.hidePanels();
   const input = $('#auth-passphrase-input', gate);
   if (input) input.value = '';
   const superPasswordInput = $('#auth-super-password', gate);
