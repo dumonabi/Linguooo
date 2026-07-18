@@ -219,10 +219,10 @@ function stripTrailingPeriod(text) {
   return text.replace(/[.。．]+$/u, '').trimEnd();
 }
 
-// A 90s recording transcribes to ~2,000 chars; its translation can need
-// 600+ output tokens in token-dense scripts (Thai, Hindi, CJK). 1,200
+// A 2-minute recording transcribes to ~2,700 chars; its translation can need
+// 800+ output tokens in token-dense scripts (Thai, Hindi, CJK). 1,600
 // leaves ample headroom — you only pay for tokens actually generated.
-const TRANSLATION_MAX_TOKENS = 1200;
+const TRANSLATION_MAX_TOKENS = 1600;
 
 async function translateTextStream(openai, text, lang1, lang2, context, onDelta, { detected } = {}) {
   const userMessage = buildTranslationUserMessage(text, lang1, lang2, context, detected);
@@ -973,58 +973,6 @@ export function createApp() {
       res.json({ rawText });
     } catch (err) {
       console.error('Transcribe error:', err);
-      res.status(500).json({ error: formatApiError(err) });
-    }
-  });
-
-  // Mints a short-lived OpenAI Realtime credential so the browser can stream
-  // mic audio directly to OpenAI and receive live transcription deltas. The
-  // real API key never leaves the server; the ephemeral secret is bound to a
-  // single transcription session and expires within minutes.
-  app.post('/api/realtime-session', requireAppAuth, converseRateLimit, async (req, res) => {
-    const openai = requireOpenAI(res);
-    if (!openai) return;
-
-    const lang1 = String(req.body.lang1 || '').toLowerCase().trim();
-    const lang2 = String(req.body.lang2 || '').toLowerCase().trim();
-    if (!validateLanguagePair(lang1, lang2, res)) return;
-
-    try {
-      const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          expires_after: { anchor: 'created_at', seconds: 300 },
-          session: {
-            type: 'transcription',
-            audio: {
-              input: {
-                noise_reduction: { type: 'near_field' },
-                transcription: {
-                  model: 'gpt-4o-mini-transcribe',
-                  prompt: buildTranscriptionPrompt(lang1, lang2),
-                },
-                turn_detection: { type: 'server_vad', silence_duration_ms: 400 },
-              },
-            },
-          },
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data?.value) {
-        console.error('Realtime session error:', response.status, data);
-        return res.status(502).json({
-          error: data?.error?.message || 'Could not start live transcription',
-        });
-      }
-
-      res.json({ clientSecret: data.value, expiresAt: data.expires_at });
-    } catch (err) {
-      console.error('Realtime session error:', err);
       res.status(500).json({ error: formatApiError(err) });
     }
   });

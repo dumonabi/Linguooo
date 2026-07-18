@@ -5,8 +5,7 @@ import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { sleep } from './media-utils.js';
-import { connectRealtimeTranscriber } from './realtime-transcribe.js';
+import { getRecordingMimeType, sleep } from './media-utils.js';
 import { apiFetch, clearAuthToken, getAuthToken, getStoredUser, initAuthStorage, persistKey, readPersistedValue, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
 import { mountAuthGate, openAuthGate, resetAuthGate } from './auth-gate.js';
 import { initUserProfile, refreshUserSession } from './user-profile.js';
@@ -30,8 +29,9 @@ const STORAGE_KEY = 'lingo-languages';
 const DEFAULT_LANG1 = 'en';
 const DEFAULT_LANG2 = 'es';
 
-const MAX_RECORDING_MS = 90_000;
+const MAX_RECORDING_MS = 120_000;
 const RECORDING_TAIL_MS = 150;
+const RECORDER_STOP_FLUSH_MS = 150;
 
 let authRequired = false;
 let recordingSessionId = 0;
@@ -45,6 +45,8 @@ const state = {
   isProcessing: false,
   isRecording: false,
   stoppingRecording: false,
+  mediaRecorder: null,
+  audioChunks: [],
   mediaStream: null,
   currentAudio: null,
   recordingStartedAt: 0,
@@ -67,12 +69,6 @@ let draftTranslationPrefetch = null;
 let draftPrefetchSeq = 0;
 let pendingSourceRecording = null;
 let cloneVoiceLanguages = new Set(listCloneVoiceLanguageCodes());
-
-// Live transcription session for the current recording (browser → OpenAI).
-let realtimeTranscriber = null;
-// The base draft text captured when recording starts, so live transcript
-// deltas can be previewed after it and discarded on cancel.
-let recordingDraftBase = '';
 
 let picker1;
 let picker2;
@@ -1033,8 +1029,6 @@ async function init() {
   void purgeStalePendingRecordings();
   void refreshPendingBanner();
   wakePendingQueue();
-  // Have a live-transcription credential ready before the first mic tap.
-  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 async function ensureAuthenticated() {
@@ -1253,8 +1247,6 @@ function onLanguagesChanged() {
   saveLanguages();
   void clearAllPendingRecordings();
   updateComposeState();
-  // The live-transcription credential embeds the language pair; replace it.
-  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 function detectBrowser() {
@@ -1946,26 +1938,22 @@ async function sendTextForTranslation({ text, signal, requestId, mode = 'active'
   await applyTranslationResult(data, { requestId });
 }
 
-// Ephemeral credentials for the direct browser → OpenAI live transcription
-// connection. Minting one takes a full server round trip (Vercel → OpenAI),
-// so a fresh secret is kept ready ahead of time — at startup, after language
-// changes, after each recording, and on mic pointerdown — and the recording
-// only consumes it. Each secret authorizes one session and expires within
-// minutes, hence the freshness check instead of a plain one-shot cache.
-let realtimeSecret = null; // { promise, pairKey, expiresAt }
-
-const REALTIME_SECRET_MIN_TTL_MS = 60_000;
-
-async function fetchRealtimeSecret() {
+async function fetchTranscriptFromAudio({ blob, mimeType }) {
   const { lang1, lang2 } = getLanguagePair();
+  const form = new FormData();
+  form.append('audio', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
+  form.append('lang1', lang1);
+  form.append('lang2', lang2);
+
+  const timeoutMs = Math.min(90000, Math.max(15000, 12000 + (blob?.size || 0) / 8));
+
   const res = await withTimeout(
-    apiFetch('/api/realtime-session', {
+    apiFetch('/api/transcribe', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lang1, lang2 }),
+      body: form,
     }),
-    12000,
-    'Could not start live transcription — check your internet',
+    timeoutMs,
+    'Transcription timed out',
     () => {},
   );
 
@@ -1979,42 +1967,11 @@ async function fetchRealtimeSecret() {
   if (res.status === 401) {
     throw new Error('Session expired — sign in again and resend');
   }
-  if (!res.ok || !data.clientSecret) {
-    throw new Error(data.error || 'Could not start live transcription');
+  if (!res.ok) {
+    throw new Error(data.error || 'Could not transcribe audio');
   }
-  return data;
-}
 
-function realtimeSecretIsFresh(entry, pairKey) {
-  if (!entry || entry.pairKey !== pairKey) return false;
-  // While the fetch is still in flight expiresAt is unknown; trust it.
-  if (!entry.expiresAt) return true;
-  return entry.expiresAt * 1000 - Date.now() > REALTIME_SECRET_MIN_TTL_MS;
-}
-
-function warmRealtimeSecret() {
-  if (!languagesReady()) return Promise.reject(new Error('Select two languages'));
-  const { lang1, lang2 } = getLanguagePair();
-  const pairKey = languagePairKey(lang1, lang2);
-  if (realtimeSecretIsFresh(realtimeSecret, pairKey)) return realtimeSecret.promise;
-
-  const entry = { pairKey, expiresAt: 0, promise: null };
-  entry.promise = fetchRealtimeSecret().then((data) => {
-    entry.expiresAt = Number(data.expiresAt) || 0;
-    return data.clientSecret;
-  });
-  // A failed prefetch must not leave a poisoned cache entry behind.
-  entry.promise.catch(() => {
-    if (realtimeSecret === entry) realtimeSecret = null;
-  });
-  realtimeSecret = entry;
-  return entry.promise;
-}
-
-function takeRealtimeSecret() {
-  const promise = warmRealtimeSecret();
-  realtimeSecret = null;
-  return promise;
+  return data.rawText?.trim() || '';
 }
 
 // If a warmed-up mic stream is not used by a recording within this window
@@ -2041,9 +1998,6 @@ function cancelWarmMicRelease() {
 function warmMicForRecording() {
   if (!languagesReady() || state.isProcessing || state.isRecording || state.stoppingRecording) return;
   primeMicAudioOnGesture();
-  // Start minting the live-transcription credential in parallel with the mic
-  // permission prompt so the session can connect the moment recording starts.
-  warmRealtimeSecret().catch(() => {});
   void ensureMicStream()
     .then(() => scheduleWarmMicRelease())
     .catch(() => {});
@@ -2065,6 +2019,14 @@ function estimateProcessingMs(recordingMs, blobBytes) {
   const audioSeconds = Math.max(recordingMs / 1000, blobBytes / 11000, 0.5);
 
   const t = Math.min(audioSeconds / 20, 1);
+  return Math.round(MIN_MS + t * (MAX_MS - MIN_MS));
+}
+
+function estimateTranscribeMs(recordingMs, blobBytes) {
+  const MIN_MS = 1000;
+  const MAX_MS = 3500;
+  const audioSeconds = Math.max(recordingMs / 1000, blobBytes / 14000, 0.4);
+  const t = Math.min(audioSeconds / 12, 1);
   return Math.round(MIN_MS + t * (MAX_MS - MIN_MS));
 }
 
@@ -2808,77 +2770,46 @@ async function beginRecording() {
   latestTranslationRequest++;
   stopPlayback();
   clearMicVoicePulse();
+  state.audioChunks = [];
   setRecordingUI(true);
-  // Loading state until the live transcription session is actually capturing
-  // audio; the sound bars only appear once speech is being recorded.
+  // Loading spinner until the recorder is actually capturing audio; the
+  // sound bars only appear once recording has truly started.
   setConnectingUI(true);
   updateComposeState();
 
-  // The credential fetch races the mic prompt; both are needed to connect.
-  const secretPromise = takeRealtimeSecret();
-  secretPromise.catch(() => {});
-
-  let stream;
   try {
-    stream = await ensureMicStream();
+    const stream = await ensureMicStream();
     if (sessionId !== recordingSessionId) {
       stream.getTracks().forEach((t) => t.stop());
       return;
     }
-  } catch (err) {
-    if (sessionId !== recordingSessionId) return;
-    setRecordingUI(false);
-    showMicHelp(err);
-    releaseMic();
-    updateComposeState();
-    return;
-  }
 
-  prepareMicMeter(stream);
-  state.mediaStream = stream;
-  recordingDraftBase = getDraftText();
+    prepareMicMeter(stream);
 
-  try {
-    // Mic audio streams straight to OpenAI over WebRTC; transcript deltas
-    // arrive on the data channel while the user speaks. There is no fallback:
-    // if this connection fails, the recording fails.
-    const transcriber = await connectRealtimeTranscriber({
-      stream,
-      clientSecret: secretPromise,
-      onText: (text) => {
-        if (sessionId !== recordingSessionId) return;
-        if (!state.isRecording && !state.stoppingRecording) return;
-        dictationInputEl.value = recordingDraftBase
-          ? `${recordingDraftBase} ${text}`
-          : text;
-        resizeDictationInput();
-      },
-      onError: (err) => {
-        if (sessionId !== recordingSessionId) return;
-        if (!state.isRecording) return;
-        showToast(err.message || 'Live transcription failed');
-        void cancelRecording();
-      },
-    });
+    // 32kbps Opus is plenty for speech transcription and shrinks uploads ~3x.
+    const mimeType = getRecordingMimeType();
+    const recorderOptions = { audioBitsPerSecond: 32000 };
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    state.mediaRecorder = new MediaRecorder(stream, recorderOptions);
 
-    if (sessionId !== recordingSessionId) {
-      transcriber.cancel();
-      return;
-    }
+    state.mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) state.audioChunks.push(e.data);
+    };
 
-    realtimeTranscriber = transcriber;
+    state.mediaRecorder.start(250);
     state.recordingStartedAt = Date.now();
     state.isRecording = true;
+    state.mediaStream = stream;
     cancelWarmMicRelease();
 
-    // Audio is flowing to the transcriber from this point: reveal the bars.
+    // Audio is being captured from this point: reveal the bars.
     setConnectingUI(false);
     updateComposeState();
     startRecordingProgress();
   } catch (err) {
     if (sessionId !== recordingSessionId) return;
     setRecordingUI(false);
-    showToast(err.message || 'Could not start live transcription');
+    showMicHelp(err);
     releaseMic();
     updateComposeState();
   }
@@ -2893,18 +2824,20 @@ async function cancelRecording() {
   stopRecordingProgress();
   setRecordingUI(false);
 
-  realtimeTranscriber?.cancel();
-  realtimeTranscriber = null;
+  try {
+    const recorder = state.mediaRecorder;
+    if (recorder && recorder.state !== 'inactive') {
+      await waitForRecorderStop(recorder);
+    }
+  } catch {
+    // ignore stop errors while cancelling
+  }
 
-  // Discard the live transcript preview and restore the pre-recording draft.
-  dictationInputEl.value = recordingDraftBase;
-  state.draftText = recordingDraftBase;
-  resizeDictationInput();
-
+  state.audioChunks = [];
+  cleanupRecorder();
   teardownMicMeter();
   releaseMicTracks();
   updateComposeState();
-  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 async function acceptRecording({ autoLimit = false } = {}) {
@@ -2912,6 +2845,7 @@ async function acceptRecording({ autoLimit = false } = {}) {
   if (!state.isRecording) return;
 
   state.stoppingRecording = true;
+  const mimeType = state.mediaRecorder?.mimeType || 'audio/webm';
 
   try {
     if (!autoLimit) {
@@ -2922,51 +2856,44 @@ async function acceptRecording({ autoLimit = false } = {}) {
     stopRecordingProgress();
     setRecordingUI(false);
 
-    const transcriber = realtimeTranscriber;
-    realtimeTranscriber = null;
+    const recorder = state.mediaRecorder;
+    if (recorder && recorder.state !== 'inactive') {
+      await waitForRecorderStop(recorder);
+    }
+
+    const blob = buildRecordingBlob(mimeType);
+    state.audioChunks = [];
+    cleanupRecorder();
+    teardownMicMeter();
+    releaseMicTracks();
 
     const recordingMs = clampRecordingMs(
       state.recordingStartedAt ? Date.now() - state.recordingStartedAt : 0,
     );
 
-    if (!autoLimit && recordingMs < 450) {
-      transcriber?.cancel();
-      dictationInputEl.value = recordingDraftBase;
-      state.draftText = recordingDraftBase;
-      resizeDictationInput();
-      teardownMicMeter();
-      releaseMicTracks();
+    if (!autoLimit && (recordingMs < 450 || blob.size < 400)) {
       showToast('Recording too short');
       updateComposeState();
       return;
     }
 
-    updateComposeState();
-    startComposeLoadingDots(loadingDotCapFromMs(2500));
+    pendingSourceRecording = { blob, mimeType, recordingMs };
 
-    // Most of the transcript already streamed in live; stop() only commits
-    // the last audio segment and waits briefly for its final text.
+    updateComposeState();
+    startComposeLoadingDots(loadingDotCapFromMs(estimateTranscribeMs(recordingMs, blob.size)));
+
     let transcript = '';
     try {
-      transcript = transcriber ? await transcriber.stop() : '';
+      transcript = await fetchTranscriptFromAudio({ blob, mimeType });
     } catch (err) {
-      showToast(err.message || 'Live transcription failed');
+      showToast(err.message || 'Could not transcribe audio');
       return;
     } finally {
       stopComposeLoadingDots();
-      teardownMicMeter();
-      releaseMicTracks();
     }
-
-    // Rebuild the draft from its pre-recording base so appendToDraft can
-    // combine, prefetch the translation, and place the caret consistently.
-    dictationInputEl.value = recordingDraftBase;
-    state.draftText = recordingDraftBase;
-    resizeDictationInput();
 
     if (!transcript.trim()) {
       showToast('No speech detected — try again');
-      updateComposeState();
       return;
     }
 
@@ -2974,14 +2901,48 @@ async function acceptRecording({ autoLimit = false } = {}) {
   } finally {
     state.stoppingRecording = false;
     updateComposeState();
-    // Mint the next credential now so the next mic tap connects immediately.
-    if (languagesReady()) warmRealtimeSecret().catch(() => {});
   }
+}
+
+async function waitForRecorderStop(mediaRecorder) {
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      setTimeout(resolve, RECORDER_STOP_FLUSH_MS);
+    };
+
+    const timeout = setTimeout(finish, 5000);
+
+    mediaRecorder.onstop = finish;
+
+    try {
+      if (mediaRecorder.state === 'recording' && typeof mediaRecorder.requestData === 'function') {
+        mediaRecorder.requestData();
+      }
+      mediaRecorder.stop();
+    } catch {
+      finish();
+    }
+  });
+}
+
+function buildRecordingBlob(mimeType) {
+  return new Blob(state.audioChunks, { type: mimeType });
+}
+
+function cleanupRecorder() {
+  state.mediaRecorder = null;
 }
 
 function releaseMicTracks() {
   state.mediaStream?.getTracks().forEach((t) => t.stop());
   state.mediaStream = null;
+  state.mediaRecorder = null;
 }
 
 function releaseMic() {
@@ -2994,6 +2955,7 @@ function resetMicUI() {
   stopComposeLoadingDots();
   stopLoadingDots();
   stopRecordingProgress();
+  cleanupRecorder();
   state.isProcessing = false;
   state.stoppingRecording = false;
   state.isRecording = false;
