@@ -8,6 +8,13 @@ export const CLONED_VOICE_LANGUAGE_CODES = new Set([
   'ta', 'tl', 'tr', 'uk', 'vi', 'zh',
 ]);
 
+// The on-demand "pro" voice runs Professional Voice Cloning on multilingual
+// v2 (the model PVC is fine-tuned on), which supports the flash set minus
+// hu/no/vi.
+export const PRO_VOICE_LANGUAGE_CODES = new Set(
+  [...CLONED_VOICE_LANGUAGE_CODES].filter((code) => !['hu', 'no', 'vi'].includes(code)),
+);
+
 const APP_ALIASES = {
   nn: 'no',
 };
@@ -24,6 +31,11 @@ export function resolveCloneVoiceLanguage(code) {
 export function supportsClonedVoice(langCode) {
   const mapped = resolveCloneVoiceLanguage(langCode);
   return Boolean(mapped && CLONED_VOICE_LANGUAGE_CODES.has(mapped));
+}
+
+export function supportsProVoice(langCode) {
+  const mapped = resolveCloneVoiceLanguage(langCode);
+  return Boolean(mapped && PRO_VOICE_LANGUAGE_CODES.has(mapped));
 }
 
 export function listCloneVoiceLanguageCodes() {

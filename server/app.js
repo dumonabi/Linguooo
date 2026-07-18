@@ -31,27 +31,40 @@ import {
 } from './profile-settings-store.js';
 import { ensureUserRegistryLoaded } from './user-store.js';
 import {
+  addProVoiceSample,
   addVoiceSample,
+  clearAllProVoiceSamples,
   clearAllVoiceSamples,
+  deleteProVoiceSample,
   deleteVoiceProfileSlot,
   deleteVoiceSample,
   getVoiceProfile,
+  listProVoiceSampleBuffers,
   listVoiceSampleBuffers,
   MAX_VOICE_SAMPLES,
+  PRO_MIN_TOTAL_MS,
+  PRO_MAX_TOTAL_MS,
+  resolveProVoiceId,
   resolveVoiceId,
+  savePvcPendingVoice,
+  saveProVoice,
   saveVoiceClone,
   validateProfileSlot,
   voiceProfileSummary,
 } from './voice-store.js';
 import {
+  addPvcSamples,
+  createPvcVoice,
   createVoiceClone,
   generateClonedSpeech,
   isElevenLabsConfigured,
+  listProfessionalVoices,
 } from './elevenlabs.js';
 import {
   cloneVoiceLanguagesByModel,
   listCloneVoiceLanguageCodes,
   supportsClonedVoice,
+  supportsProVoice,
 } from './elevenlabs-languages.js';
 import { waitUntil } from '@vercel/functions';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
@@ -321,6 +334,27 @@ function buildSpeechWarmer(openai, req) {
   };
 }
 
+// Links a Professional Voice Clone created in the ElevenLabs dashboard to
+// this profile without manual configuration: when the account has exactly
+// one PVC voice, adopt and persist it. With several PVC voices the link is
+// ambiguous, so ELEVENLABS_PRO_VOICE_ID must pick one.
+async function discoverProVoice(userId, slot, voiceProfile = null) {
+  try {
+    const voices = await listProfessionalVoices();
+    // Prefer the PVC voice this profile submitted itself; otherwise only
+    // auto-link when the account has exactly one professional voice.
+    const pendingId = voiceProfile?.pvcPendingVoiceId;
+    const match = (pendingId && voices.find((voice) => voice.voiceId === pendingId))
+      || (voices.length === 1 ? voices[0] : null);
+    if (!match) return null;
+    await saveProVoice(userId, slot, match.voiceId);
+    return match.voiceId;
+  } catch (err) {
+    console.warn('Pro voice discovery failed:', err?.message || err);
+    return null;
+  }
+}
+
 function parseConversationContext(value) {
   if (!value) return [];
   if (Array.isArray(value)) return value;
@@ -379,8 +413,8 @@ async function transcribeAudio(openai, file, { lang1, lang2 } = {}) {
 const ttsCache = new Map();
 const TTS_CACHE_MAX = 120;
 
-function ttsCacheKey(text, lang, voiceId = null) {
-  return `${voiceId || 'default'}|${lang || ''}|${prepareTextForSpeech(text, lang)}`;
+function ttsCacheKey(text, lang, voiceId = null, quality = 'fast') {
+  return `${quality}|${voiceId || 'default'}|${lang || ''}|${prepareTextForSpeech(text, lang)}`;
 }
 
 function readTtsCache(key) {
@@ -400,7 +434,13 @@ function writeTtsCache(key, buffer) {
   }
 }
 
-async function generateSpeechBuffer(openai, input, lang, voiceId = null) {
+async function generateSpeechBuffer(openai, input, lang, voiceId = null, { pro = false } = {}) {
+  // The pro path is explicit and never falls back to another voice: if the
+  // PVC generation fails, the caller sees the error.
+  if (pro) {
+    return generateClonedSpeech(input, voiceId, lang, { pro: true });
+  }
+
   if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
     return generateClonedSpeech(input, voiceId, lang);
   }
@@ -451,13 +491,13 @@ async function readTtsBlob(cacheKey) {
   }
 }
 
-function generateSpeech(openai, text, lang, voiceId = null) {
+function generateSpeech(openai, text, lang, voiceId = null, { pro = false } = {}) {
   const input = prepareTextForSpeech(text, lang);
   if (!input) {
     return Promise.reject(new Error('No speakable text'));
   }
 
-  const cacheKey = ttsCacheKey(input, lang, voiceId);
+  const cacheKey = ttsCacheKey(input, lang, voiceId, pro ? 'pro' : 'fast');
   const cached = readTtsCache(cacheKey);
   if (cached) return Promise.resolve(cached);
 
@@ -471,7 +511,7 @@ function generateSpeech(openai, text, lang, voiceId = null) {
       return blobHit;
     }
 
-    const buffer = await generateSpeechBuffer(openai, input, lang, voiceId);
+    const buffer = await generateSpeechBuffer(openai, input, lang, voiceId, { pro });
     writeTtsCache(cacheKey, buffer);
     persistTtsBlob(cacheKey, buffer);
     return buffer;
@@ -517,6 +557,11 @@ function formatVoiceProfileResponse(user, voiceProfile) {
   return {
     ...voiceProfileSummary(voiceProfile),
     samples: voiceProfile.samples.map(({ id, createdAt, durationMs }) => ({
+      id,
+      createdAt,
+      durationMs: Number(durationMs) || 0,
+    })),
+    proSamples: (voiceProfile.proSamples || []).map(({ id, createdAt, durationMs }) => ({
       id,
       createdAt,
       durationMs: Number(durationMs) || 0,
@@ -769,6 +814,134 @@ export function createApp() {
     }
   });
 
+  // ---- Professional Voice Cloning (PVC) sample collection ----
+
+  const proSamplesState = (profile) => {
+    const proSamples = profile.proSamples || [];
+    return {
+      proSampleCount: proSamples.length,
+      proTotalDurationMs: proSamples.reduce((sum, s) => sum + (Number(s.durationMs) || 0), 0),
+      proMinTotalMs: PRO_MIN_TOTAL_MS,
+      proMaxTotalMs: PRO_MAX_TOTAL_MS,
+      pvcSubmitted: Boolean(profile.pvcPendingVoiceId),
+    };
+  };
+
+  app.post('/api/voice/pro-samples', requireAppAuth, voiceSampleRateLimit, upload.single('audio'), async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'No audio received' });
+    }
+
+    try {
+      const profile = await addProVoiceSample(req.user.id, slot, req.file.buffer, {
+        mimeType: req.file.mimetype || 'audio/webm',
+        durationMs: Number(req.body?.durationMs),
+      });
+      res.json({
+        ok: true,
+        sampleId: profile.proSamples.at(-1)?.id ?? null,
+        profileSlot: slot,
+        ...proSamplesState(profile),
+      });
+    } catch (err) {
+      console.error('Pro sample upload error:', err);
+      const status = err.code === 'SAMPLE_LIMIT' || err.code === 'DURATION_LIMIT' ? 400 : 500;
+      res.status(status).json({ error: err.message || 'Could not save pro sample' });
+    }
+  });
+
+  app.delete('/api/voice/pro-samples', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    try {
+      const profile = await clearAllProVoiceSamples(req.user.id, slot);
+      res.json({ ok: true, profileSlot: slot, ...proSamplesState(profile) });
+    } catch (err) {
+      console.error('Pro samples reset error:', err);
+      res.status(500).json({ error: err.message || 'Could not reset pro samples' });
+    }
+  });
+
+  app.delete('/api/voice/pro-samples/:sampleId', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    try {
+      const profile = await deleteProVoiceSample(req.user.id, slot, req.params.sampleId);
+      if (!profile) {
+        return res.status(404).json({ error: 'Sample not found' });
+      }
+      res.json({ ok: true, profileSlot: slot, ...proSamplesState(profile) });
+    } catch (err) {
+      console.error('Pro sample delete error:', err);
+      res.status(500).json({ error: err.message || 'Could not delete pro sample' });
+    }
+  });
+
+  // Creates the PVC voice on ElevenLabs and uploads every collected sample.
+  // Verification (reading a captcha aloud) and training are finished in the
+  // ElevenLabs dashboard; once trained, the PRO path links the voice
+  // automatically via discoverProVoice.
+  app.post('/api/voice/pro-create', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    if (!isElevenLabsConfigured()) {
+      return res.status(503).json({ error: 'Voice cloning is not configured on the server' });
+    }
+
+    try {
+      const { profile, buffers } = await listProVoiceSampleBuffers(req.user.id, slot);
+      const totalMs = (profile.proSamples || []).reduce((sum, s) => sum + (Number(s.durationMs) || 0), 0);
+      if (totalMs < PRO_MIN_TOTAL_MS) {
+        const missingMin = Math.ceil((PRO_MIN_TOTAL_MS - totalMs) / 60_000);
+        return res.status(400).json({
+          error: `Professional cloning needs at least 30 minutes of audio — about ${missingMin} more minutes to go`,
+        });
+      }
+      if (!buffers.length) {
+        return res.status(400).json({ error: 'No pro samples found' });
+      }
+
+      const language = String(req.body?.language || 'en').toLowerCase().slice(0, 5);
+      const voiceId = profile.pvcPendingVoiceId || await createPvcVoice({
+        name: `Lingu ${req.user.name} ${slot} PRO`,
+        language,
+        description: `Professional voice profile ${slot} for ${req.user.name}`,
+      });
+
+      // ElevenLabs accepts multiple files per request, but keep each batch
+      // modest so a single slow upload cannot exhaust the function timeout.
+      const MAX_BATCH_BYTES = 20 * 1024 * 1024;
+      const MAX_BATCH_FILES = 15;
+      let batch = [];
+      let batchBytes = 0;
+      for (const sample of buffers) {
+        if (batch.length && (batch.length >= MAX_BATCH_FILES || batchBytes + sample.buffer.length > MAX_BATCH_BYTES)) {
+          await addPvcSamples(voiceId, batch);
+          batch = [];
+          batchBytes = 0;
+        }
+        batch.push(sample);
+        batchBytes += sample.buffer.length;
+      }
+      if (batch.length) {
+        await addPvcSamples(voiceId, batch);
+      }
+
+      const saved = await savePvcPendingVoice(req.user.id, slot, voiceId);
+      res.json({
+        ok: true,
+        pvcVoiceId: voiceId,
+        profileSlot: slot,
+        ...proSamplesState(saved),
+      });
+    } catch (err) {
+      console.error('PVC create error:', err);
+      res.status(500).json({ error: err.message || 'Could not create professional voice' });
+    }
+  });
+
   app.get('/api/languages', requireAppAuth, (_req, res) => {
     res.json(getLanguagesList());
   });
@@ -800,6 +973,58 @@ export function createApp() {
       res.json({ rawText });
     } catch (err) {
       console.error('Transcribe error:', err);
+      res.status(500).json({ error: formatApiError(err) });
+    }
+  });
+
+  // Mints a short-lived OpenAI Realtime credential so the browser can stream
+  // mic audio directly to OpenAI and receive live transcription deltas. The
+  // real API key never leaves the server; the ephemeral secret is bound to a
+  // single transcription session and expires within minutes.
+  app.post('/api/realtime-session', requireAppAuth, converseRateLimit, async (req, res) => {
+    const openai = requireOpenAI(res);
+    if (!openai) return;
+
+    const lang1 = String(req.body.lang1 || '').toLowerCase().trim();
+    const lang2 = String(req.body.lang2 || '').toLowerCase().trim();
+    if (!validateLanguagePair(lang1, lang2, res)) return;
+
+    try {
+      const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          expires_after: { anchor: 'created_at', seconds: 300 },
+          session: {
+            type: 'transcription',
+            audio: {
+              input: {
+                noise_reduction: { type: 'near_field' },
+                transcription: {
+                  model: 'gpt-4o-mini-transcribe',
+                  prompt: buildTranscriptionPrompt(lang1, lang2),
+                },
+                turn_detection: { type: 'server_vad', silence_duration_ms: 400 },
+              },
+            },
+          },
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.value) {
+        console.error('Realtime session error:', response.status, data);
+        return res.status(502).json({
+          error: data?.error?.message || 'Could not start live transcription',
+        });
+      }
+
+      res.json({ clientSecret: data.value, expiresAt: data.expires_at });
+    } catch (err) {
+      console.error('Realtime session error:', err);
       res.status(500).json({ error: formatApiError(err) });
     }
   });
@@ -887,6 +1112,34 @@ export function createApp() {
       const slot = requireProfileSlot(req, res);
       if (slot == null) return;
       const voiceProfile = await getVoiceProfile(req.user.id, slot);
+
+      // On-demand pro audio: Professional Voice Clone on multilingual v2.
+      // Never generated automatically and never a silent fallback — if the
+      // PVC voice is missing the request fails with guidance instead.
+      if (req.body.quality === 'pro') {
+        if (!isElevenLabsConfigured()) {
+          return res.status(503).json({ error: 'Voice service not configured' });
+        }
+        if (!supportsProVoice(langCode)) {
+          return res.status(400).json({ error: 'Pro voice does not support this language yet' });
+        }
+
+        const proVoiceId = resolveProVoiceId(voiceProfile)
+          || await discoverProVoice(req.user.id, slot, voiceProfile);
+        if (!proVoiceId) {
+          const message = voiceProfile?.pvcPendingVoiceId
+            ? 'Pro voice is still training — finish verification in the ElevenLabs dashboard and try again once training completes'
+            : 'Pro voice not ready — record or upload 30 minutes of audio in your profile\u2019s PRO section and submit it';
+          return res.status(409).json({ error: message });
+        }
+
+        const buffer = await generateSpeech(openai, text, langCode, proVoiceId, { pro: true });
+        res.set('Content-Type', 'audio/mpeg');
+        res.set('Cache-Control', 'private, max-age=3600');
+        res.set('X-Voice-Mode', 'pro');
+        return res.send(buffer);
+      }
+
       const voiceId = resolveVoiceId(req.user, voiceProfile);
       const useClone = Boolean(voiceId) && supportsClonedVoice(langCode);
 

@@ -3,8 +3,6 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- Render at the real watch viewport instead of a scaled-down 320px page. -->
-    <meta name="disable-adaptations" content="watch" />
     <meta name="theme-color" content="#000000" />
     <meta name="description" content="Lingu.ooo — speak in either language, AI translates automatically" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -83,6 +81,12 @@
             </div>
             <div class="compose-toolbar-center">
               <div class="compose-level" id="compose-level" aria-hidden="true"></div>
+              <div class="compose-connecting" id="compose-connecting" aria-hidden="true">
+                <svg class="compose-connecting-spinner" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle class="compose-connecting-spinner-track" cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" />
+                  <path class="compose-connecting-spinner-arc" d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
+              </div>
             </div>
             <div class="compose-toolbar-right">
               <div class="compose-idle" id="compose-idle">
@@ -199,28 +203,6 @@
                 <button
                   type="button"
                   class="auth-input-tool"
-                  id="auth-seed-keypad-toggle"
-                  aria-label="Phone keypad input"
-                  title="Phone keypad input"
-                  aria-expanded="false"
-                >
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M12 19c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 7 4 7.9 4 9s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6C4.9 1 4 1.9 4 3s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm-6 8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  class="auth-input-tool"
-                  id="auth-seed-numeric-toggle"
-                  aria-label="Word number input"
-                  title="Word number input"
-                  aria-expanded="false"
-                >
-                  <span class="auth-input-tool-text" aria-hidden="true">123</span>
-                </button>
-                <button
-                  type="button"
-                  class="auth-input-tool"
                   id="auth-seed-binary-toggle"
                   aria-label="Binary squares input"
                   title="Binary squares input"
@@ -233,8 +215,6 @@
               </div>
               <ul class="auth-word-list" id="auth-word-list" hidden role="listbox" aria-label="BIP39 words"></ul>
             </div>
-            <div class="auth-keypad" id="auth-seed-keypad" hidden></div>
-            <div class="auth-numeric" id="auth-seed-numeric" hidden></div>
             <div class="auth-binary" id="auth-seed-binary" hidden></div>
             <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
           </form>

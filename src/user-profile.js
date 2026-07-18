@@ -24,6 +24,7 @@ import {
   scheduleProfileSettingsSync,
 } from './profile-sync.js';
 import {
+  getProVoicePrompt,
   getVoicePrompt,
   getVoiceUi,
   resolveVoiceLanguage,
@@ -392,8 +393,15 @@ let profileUserGridAbortController = null;
 let profileUserGridOpen = false;
 let voiceSamplesPageOpen = false;
 
+// Professional Voice Cloning (PVC) sample collection mode on the samples page.
+let proSamplesMode = false;
+let submittingProVoice = false;
+
 const MIN_SAMPLES = VOICE_SAMPLE_TARGET;
 const MIN_VOICE_CLIP_MS = VOICE_MIN_CLIP_SEC * 1000;
+// Keep individual pro takes below the serverless upload limit (~4.5 MB):
+// at 32 kbps Opus a 15-minute clip is ~3.6 MB.
+const PRO_MAX_CLIP_MS = 15 * 60_000;
 
 function saveProfileGridSlotName(slotNumber, value) {
   const sessionUserId = getStoredUser()?.id;
@@ -491,20 +499,6 @@ function saveVoiceLangPref(userId, code, slotNumber = getCurrentProfileSlot()) {
   } catch {
     // ignore storage errors
   }
-}
-
-function updateVoicePromptText() {
-  const user = getStoredUser();
-  if (!user) return;
-  const page = $('#user-profile-voice-samples-page', rootEl);
-  if (!page) return;
-  const state = getProfileState(user);
-  const prompt = getVoicePrompt(
-    voiceLang,
-    nextPromptIndex(state.sampleCount, state.maxSamples),
-  );
-  const el = $('.user-profile-prompt-text', page);
-  if (el) el.textContent = `"${prompt}"`;
 }
 
 async function ensureProfileLanguages() {
@@ -730,6 +724,9 @@ function updateProfileRecordingTimer() {
     'user-profile-recording-timer--advisable',
     elapsed >= VOICE_ADVISABLE_CLIP_SEC * 1000,
   );
+  if (proSamplesMode && elapsed >= PRO_MAX_CLIP_MS && !savingSample) {
+    void stopVoiceSampleRecording();
+  }
 }
 
 function nextPromptIndex(sampleCount, maxSamples = MIN_SAMPLES) {
@@ -748,6 +745,11 @@ function getProfileState(user) {
     status: voiceProfile?.status ?? user?.voiceStatus ?? 'none',
     elevenlabsConfigured: voiceProfile?.elevenlabsConfigured !== false,
     samplesComplete: sampleCount >= maxSamples,
+    proSampleCount: voiceProfile?.proSampleCount ?? 0,
+    proTotalDurationMs: voiceProfile?.proTotalDurationMs ?? 0,
+    proMinTotalMs: voiceProfile?.proMinTotalMs ?? 30 * 60_000,
+    proMaxTotalMs: voiceProfile?.proMaxTotalMs ?? 3 * 3_600_000,
+    pvcSubmitted: Boolean(voiceProfile?.pvcSubmitted),
   };
 }
 
@@ -926,6 +928,78 @@ function bindVoiceRecordingControls(root) {
   $('#user-voice-record-again-btn', root)?.addEventListener('click', () => void resetAllVoiceSamples());
 }
 
+function buildProModeToggleMarkup(ui, hidden) {
+  return `
+    <div class="user-profile-voice-mode-row"${hidden ? ' hidden' : ''}>
+      <button
+        type="button"
+        class="user-profile-voice-mode-btn${proSamplesMode ? ' is-pro' : ''}"
+        id="user-voice-mode-toggle"
+        aria-pressed="${proSamplesMode ? 'true' : 'false'}"
+        title="${escapeHtml(ui.proModeLabel)}"
+        aria-label="${escapeHtml(ui.proModeLabel)}"
+      >${escapeHtml(ui.proModeLabel)}</button>
+    </div>
+  `;
+}
+
+function buildProSamplesProgressMarkup(ui, state) {
+  const total = formatVoiceClock(state.proTotalDurationMs);
+  const goal = formatVoiceClock(state.proMinTotalMs);
+  const reachedGoal = state.proTotalDurationMs >= state.proMinTotalMs;
+  return `
+    <div class="user-profile-samples-progress user-profile-samples-progress--pro">
+      <div class="user-profile-samples-progress-count-row">
+        <p class="user-profile-samples-progress-count">${escapeHtml(String(state.proSampleCount))}</p>
+        ${PROFILE_SPEAK_AUDIO_ICON_SVG}
+      </div>
+      <p class="user-profile-duration-total${reachedGoal ? ' user-profile-duration-total--ready' : ''}">
+        <span class="user-profile-duration-total-value">${escapeHtml(total)} / ${escapeHtml(goal)}</span>
+      </p>
+    </div>
+  `;
+}
+
+function buildProVoiceExtrasMarkup(ui, state) {
+  const busy = submittingProVoice;
+  const reachedGoal = state.proTotalDurationMs >= state.proMinTotalMs;
+  const missingMin = Math.ceil(Math.max(0, state.proMinTotalMs - state.proTotalDurationMs) / 60_000);
+  const remainingText = reachedGoal
+    ? ui.proReady
+    : ui.proRemaining.replace('{min}', String(missingMin));
+
+  return `
+    <p class="user-profile-note user-profile-pro-copy">${escapeHtml(ui.proVoiceCopy)}</p>
+    ${state.pvcSubmitted ? `
+    <p class="user-profile-note user-profile-pro-submitted">${escapeHtml(ui.proSubmittedNote)}</p>
+    ` : ''}
+    <p class="user-profile-note user-profile-pro-remaining">${escapeHtml(remainingText)}</p>
+    <div class="user-profile-pro-actions">
+      <button
+        type="button"
+        class="user-profile-pro-btn user-profile-pro-btn--submit"
+        id="user-voice-pro-submit-btn"
+        ${busy || !reachedGoal || !state.proSampleCount ? 'disabled' : ''}
+      >${escapeHtml(submittingProVoice ? ui.proSubmitting : ui.proSubmit)}</button>
+      ${state.proSampleCount > 0 ? `
+      <button
+        type="button"
+        class="user-profile-pro-btn user-profile-pro-btn--danger"
+        id="user-voice-pro-reset-btn"
+        title="${escapeHtml(ui.proDeleteAll)}"
+        aria-label="${escapeHtml(ui.proDeleteAll)}"
+        ${busy ? 'disabled' : ''}
+      >${PROFILE_RECORD_AGAIN_ICON_SVG}</button>
+      ` : ''}
+    </div>
+  `;
+}
+
+function bindProVoiceControls(root) {
+  $('#user-voice-pro-submit-btn', root)?.addEventListener('click', () => void submitProVoice());
+  $('#user-voice-pro-reset-btn', root)?.addEventListener('click', () => void resetProSamples());
+}
+
 async function renderVoiceSamplesPage() {
   const user = getStoredUser();
   const page = $('#user-profile-voice-samples-page', rootEl);
@@ -937,29 +1011,63 @@ async function renderVoiceSamplesPage() {
   const ui = getVoiceUi(voiceLang);
   const state = getProfileState(user);
   const { maxSamples, sampleCount, canRecordMore } = state;
-  const prompt = getVoicePrompt(voiceLang, nextPromptIndex(sampleCount, maxSamples));
   const isRecording = Boolean(recordingSession);
-  const recordingAtLimit = isRecording && !canRecordMore;
-  const showRecord = canRecordMore && !isRecording && !creatingVoice && !savingSample;
-  const showRecordAgain = sampleCount >= maxSamples && !isRecording && !creatingVoice && !savingSample;
-  const savedCount = Math.min(sampleCount, maxSamples);
-  const savedDurationMs = getSavedVoiceDurationMs();
   const progressSlot = $('#user-profile-voice-samples-progress', page);
-  if (progressSlot) {
-    progressSlot.innerHTML = buildVoiceSamplesProgressMarkup(ui, savedCount, maxSamples, savedDurationMs);
+
+  if (proSamplesMode) {
+    const busy = submittingProVoice;
+    const prompt = getProVoicePrompt(voiceLang, state.proSampleCount);
+    const atMax = state.proTotalDurationMs >= state.proMaxTotalMs;
+    const showRecord = !isRecording && !savingSample && !busy && !atMax;
+    if (progressSlot) {
+      progressSlot.innerHTML = buildProSamplesProgressMarkup(ui, state);
+    }
+    main.innerHTML = `
+      ${buildProModeToggleMarkup(ui, isRecording || savingSample)}
+      ${buildVoiceRecordingMarkup({
+        ui,
+        prompt,
+        isRecording,
+        recordingAtLimit: false,
+        showRecord,
+        savingSample,
+        showRecordAgain: false,
+      })}
+      ${!isRecording && !savingSample ? buildProVoiceExtrasMarkup(ui, state) : ''}
+    `;
+    bindVoiceRecordingControls(page);
+    bindProVoiceControls(page);
+  } else {
+    const prompt = getVoicePrompt(voiceLang, nextPromptIndex(sampleCount, maxSamples));
+    const recordingAtLimit = isRecording && !canRecordMore;
+    const showRecord = canRecordMore && !isRecording && !creatingVoice && !savingSample;
+    const showRecordAgain = sampleCount >= maxSamples && !isRecording && !creatingVoice && !savingSample;
+    const savedCount = Math.min(sampleCount, maxSamples);
+    const savedDurationMs = getSavedVoiceDurationMs();
+    if (progressSlot) {
+      progressSlot.innerHTML = buildVoiceSamplesProgressMarkup(ui, savedCount, maxSamples, savedDurationMs);
+    }
+    main.innerHTML = `
+      ${buildProModeToggleMarkup(ui, isRecording || savingSample)}
+      ${buildVoiceRecordingMarkup({
+        ui,
+        prompt,
+        isRecording,
+        recordingAtLimit,
+        showRecord,
+        savingSample,
+        showRecordAgain,
+      })}
+    `;
+    bindVoiceRecordingControls(page);
   }
 
-  main.innerHTML = buildVoiceRecordingMarkup({
-    ui,
-    prompt,
-    isRecording,
-    recordingAtLimit,
-    showRecord,
-    savingSample,
-    showRecordAgain,
+  $('#user-voice-mode-toggle', page)?.addEventListener('click', () => {
+    if (recordingSession || savingSample) return;
+    proSamplesMode = !proSamplesMode;
+    void renderVoiceSamplesPage();
   });
 
-  bindVoiceRecordingControls(page);
   setupProfileLangPicker(page, user);
   if (isRecording) {
     setupProfileRecordingWave();
@@ -1395,7 +1503,7 @@ async function startVoiceSampleRecording() {
   const maxSamples = voiceProfile?.maxSamples ?? MIN_SAMPLES;
   const sampleCount = voiceProfile?.sampleCount ?? user?.voiceSampleCount ?? 0;
   const canRecordMore = voiceProfile?.canRecordMore ?? sampleCount < maxSamples;
-  if (!canRecordMore) {
+  if (!proSamplesMode && !canRecordMore) {
     toast(`You already have ${maxSamples} voice samples`);
     return;
   }
@@ -1405,9 +1513,13 @@ async function startVoiceSampleRecording() {
       audio: { echoCancellation: true, noiseSuppression: true },
     });
     const mimeType = getRecordingMimeType();
-    const recorder = mimeType
-      ? new MediaRecorder(stream, { mimeType })
-      : new MediaRecorder(stream);
+    // Pro takes can run for many minutes, so use a low bitrate to stay
+    // under the serverless upload size limit.
+    const options = {
+      ...(mimeType ? { mimeType } : {}),
+      ...(proSamplesMode ? { audioBitsPerSecond: 32000 } : {}),
+    };
+    const recorder = new MediaRecorder(stream, options);
     const chunks = [];
 
     recorder.ondataavailable = (event) => {
@@ -1444,7 +1556,7 @@ async function stopVoiceSampleRecording() {
   const slot = getCurrentProfileSlot();
   if (user?.id && slot) saveProfileUserMenuSelection(user.id, slot);
   const state = getProfileState(user);
-  if (!state.canRecordMore) {
+  if (!proSamplesMode && !state.canRecordMore) {
     cancelVoiceSampleRecording();
     toast(`You already have ${state.maxSamples} samples`);
     return;
@@ -1475,7 +1587,8 @@ async function stopVoiceSampleRecording() {
     form.append('durationMs', String(durationMs));
     form.append('slot', String(slot));
 
-    const res = await apiFetch(voiceApiPath('/api/voice/samples', slot), {
+    const endpoint = proSamplesMode ? '/api/voice/pro-samples' : '/api/voice/samples';
+    const res = await apiFetch(voiceApiPath(endpoint, slot), {
       method: 'POST',
       body: form,
     });
@@ -1486,10 +1599,10 @@ async function stopVoiceSampleRecording() {
       return;
     }
 
-    toast('Voice sample saved');
+    toast(proSamplesMode ? getVoiceUi(voiceLang).proSampleSaved : 'Voice sample saved');
     await refreshVoiceProfile(slot);
 
-    if (data.readyForClone && voiceProfile?.elevenlabsConfigured !== false && !getStoredUser()?.voiceReady) {
+    if (!proSamplesMode && data.readyForClone && voiceProfile?.elevenlabsConfigured !== false && !getStoredUser()?.voiceReady) {
       await createVoiceProfile(false);
     }
   } catch (err) {
@@ -1523,6 +1636,51 @@ async function resetAllVoiceSamples() {
   }
   toast(ui.recordAgain);
   await refreshUserSession();
+}
+
+async function submitProVoice() {
+  if (submittingProVoice) return;
+  const slot = getCurrentProfileSlot();
+  const ui = getVoiceUi(voiceLang);
+
+  submittingProVoice = true;
+  await renderActiveProfileUi();
+
+  try {
+    const res = await apiFetch(voiceApiPath('/api/voice/pro-create', slot), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: voiceLang, slot }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(data.error || ui.proSubmitFailed);
+      return;
+    }
+    toast(ui.proSubmittedNote);
+    await refreshVoiceProfile(slot);
+  } catch (err) {
+    toast(err.message || ui.proSubmitFailed);
+  } finally {
+    submittingProVoice = false;
+    await renderActiveProfileUi();
+  }
+}
+
+async function resetProSamples() {
+  if (recordingSession || savingSample || submittingProVoice) return;
+  const ui = getVoiceUi(voiceLang);
+  if (!window.confirm(ui.proResetConfirm)) return;
+
+  const slot = getCurrentProfileSlot();
+  const res = await apiFetch(voiceApiPath('/api/voice/pro-samples', slot), { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    toast(data.error || 'Could not reset pro samples');
+    return;
+  }
+  await refreshVoiceProfile(slot);
+  await renderActiveProfileUi();
 }
 
 async function createVoiceProfile(isUpdate) {

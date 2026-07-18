@@ -1,5 +1,6 @@
 import {
   ELEVEN_MODEL_FLASH,
+  ELEVEN_MODEL_V2,
   resolveCloneVoiceModel,
   toElevenLabsLanguageCode,
 } from './elevenlabs-languages.js';
@@ -94,7 +95,7 @@ function clampTextForModel(text, modelId) {
   return clamped;
 }
 
-export async function generateClonedSpeech(text, voiceId, langCode = null) {
+export async function generateClonedSpeech(text, voiceId, langCode = null, { pro = false } = {}) {
   const apiKey = getElevenLabsApiKey();
   if (!apiKey) {
     throw new Error('ElevenLabs API key not configured');
@@ -103,7 +104,9 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
     throw new Error('Voice profile not ready');
   }
 
-  const modelId = resolveSpeechModelId(langCode);
+  // Pro requests run the Professional Voice Clone on multilingual v2 — the
+  // model PVC voices are fine-tuned on — trading latency for fidelity.
+  const modelId = pro ? ELEVEN_MODEL_V2 : resolveSpeechModelId(langCode);
   const isFlash = modelId === ELEVEN_MODEL_FLASH;
 
   // style and speaker boost add generation latency and are not meaningful
@@ -126,9 +129,11 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
     payload.language_code = elevenLang;
   }
 
-  // 64 kbps halves the payload vs the 128 kbps default; for speech the
-  // quality difference is inaudible and the download reaches the phone sooner.
-  const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}?output_format=mp3_44100_64`, {
+  // Fast path: 64 kbps halves the payload vs the 128 kbps default; for speech
+  // the quality difference is inaudible and the download reaches the phone
+  // sooner. Pro path: full 128 kbps, since quality is the whole point.
+  const outputFormat = pro ? 'mp3_44100_128' : 'mp3_44100_64';
+  const res = await fetch(`${ELEVENLABS_BASE}/text-to-speech/${voiceId}?output_format=${outputFormat}`, {
     method: 'POST',
     headers: authHeaders({
       'Content-Type': 'application/json',
@@ -144,6 +149,102 @@ export async function generateClonedSpeech(text, voiceId, langCode = null) {
   }
 
   return Buffer.from(await res.arrayBuffer());
+}
+
+// Professional (PVC) voices in the ElevenLabs account. Used to auto-link a
+// Professional Voice Clone created in the ElevenLabs dashboard to the app's
+// pro audio path without manual configuration.
+export async function listProfessionalVoices() {
+  const apiKey = getElevenLabsApiKey();
+  if (!apiKey) {
+    throw new Error('ElevenLabs API key not configured');
+  }
+
+  const res = await fetch(`${ELEVENLABS_BASE}/voices?category=professional`, {
+    headers: authHeaders(),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail?.message || data?.detail || data?.message || 'Could not list voices';
+    throw new Error(typeof detail === 'string' ? detail : 'Could not list voices');
+  }
+
+  return (data?.voices || [])
+    .filter((voice) => voice?.category === 'professional' && voice?.voice_id)
+    // A PVC voice exists as soon as it is created, but it can only speak
+    // after fine-tuning finishes — skip voices that are still training.
+    .filter((voice) => {
+      const state = voice?.fine_tuning?.state?.[ELEVEN_MODEL_V2];
+      return state == null || state === 'fine_tuned';
+    })
+    .map((voice) => ({ voiceId: voice.voice_id, name: voice.name || '' }));
+}
+
+// ---- Professional Voice Cloning (PVC) ----
+// Creating a PVC voice and feeding it samples works on the Creator plan.
+// Verification and training are finished in the ElevenLabs dashboard; once
+// trained, the voice shows up in listProfessionalVoices() and the app links
+// it to the PRO audio path automatically.
+
+export async function createPvcVoice({ name, language, description }) {
+  const apiKey = getElevenLabsApiKey();
+  if (!apiKey) {
+    throw new Error('ElevenLabs API key not configured');
+  }
+
+  const res = await fetch(`${ELEVENLABS_BASE}/voices/pvc`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      name,
+      language: language || 'en',
+      description: description || 'Lingu.ooo professional voice profile',
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail?.message || data?.detail || data?.message || 'Could not create PVC voice';
+    throw new Error(typeof detail === 'string' ? detail : 'Could not create PVC voice');
+  }
+  if (!data?.voice_id) {
+    throw new Error('PVC voice creation did not return a voice id');
+  }
+  return data.voice_id;
+}
+
+export async function addPvcSamples(voiceId, samples, { removeBackgroundNoise = false } = {}) {
+  const apiKey = getElevenLabsApiKey();
+  if (!apiKey) {
+    throw new Error('ElevenLabs API key not configured');
+  }
+  if (!samples?.length) {
+    throw new Error('At least one sample is required');
+  }
+
+  const form = new FormData();
+  for (const sample of samples) {
+    const filename = sample.name || `pro-sample-${sample.id}.${sample.ext || 'webm'}`;
+    const blob = new Blob([sample.buffer], { type: sample.mimeType || 'audio/webm' });
+    form.append('files', blob, filename);
+  }
+  if (removeBackgroundNoise) {
+    form.append('remove_background_noise', 'true');
+  }
+
+  const res = await fetch(`${ELEVENLABS_BASE}/voices/pvc/${encodeURIComponent(voiceId)}/samples`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: form,
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data?.detail?.message || data?.detail || data?.message || 'Could not upload PVC samples';
+    throw new Error(typeof detail === 'string' ? detail : 'Could not upload PVC samples');
+  }
+  return data;
 }
 
 function dubFilename(mimeType = 'audio/webm') {

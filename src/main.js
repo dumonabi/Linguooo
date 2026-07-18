@@ -1,11 +1,12 @@
 import { createLangPicker, hideAllLangPickerCarets } from './lang-picker.js';
-import { listCloneVoiceLanguageCodes, supportsClonedVoice } from './elevenlabs-languages.js';
+import { listCloneVoiceLanguageCodes, supportsClonedVoice, supportsProVoice } from './elevenlabs-languages.js';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { getRecordingMimeType, sleep } from './media-utils.js';
+import { sleep } from './media-utils.js';
+import { connectRealtimeTranscriber } from './realtime-transcribe.js';
 import { apiFetch, clearAuthToken, getAuthToken, getStoredUser, initAuthStorage, persistKey, readPersistedValue, revalidateSession, restoreSessionIfPossible, setStoredUser } from './auth.js';
 import { mountAuthGate, openAuthGate, resetAuthGate } from './auth-gate.js';
 import { initUserProfile, refreshUserSession } from './user-profile.js';
@@ -31,7 +32,6 @@ const DEFAULT_LANG2 = 'es';
 
 const MAX_RECORDING_MS = 90_000;
 const RECORDING_TAIL_MS = 150;
-const RECORDER_STOP_FLUSH_MS = 150;
 
 let authRequired = false;
 let recordingSessionId = 0;
@@ -45,8 +45,6 @@ const state = {
   isProcessing: false,
   isRecording: false,
   stoppingRecording: false,
-  mediaRecorder: null,
-  audioChunks: [],
   mediaStream: null,
   currentAudio: null,
   recordingStartedAt: 0,
@@ -57,6 +55,9 @@ const state = {
 
 let playbackEpoch = 0;
 let activePlayback = null;
+// On-demand Professional Voice Clone playback, independent from the fast
+// path: { audio, messageId }.
+let proPlayback = null;
 let speakChain = Promise.resolve();
 let latestTranslationRequest = 0;
 let lastTranslationAppliedAt = 0;
@@ -66,6 +67,12 @@ let draftTranslationPrefetch = null;
 let draftPrefetchSeq = 0;
 let pendingSourceRecording = null;
 let cloneVoiceLanguages = new Set(listCloneVoiceLanguageCodes());
+
+// Live transcription session for the current recording (browser → OpenAI).
+let realtimeTranscriber = null;
+// The base draft text captured when recording starts, so live transcript
+// deltas can be previewed after it and discarded on cancel.
+let recordingDraftBase = '';
 
 let picker1;
 let picker2;
@@ -284,6 +291,7 @@ function hideAudioActions(message) {
   const playbackSlot = card?.querySelector('.message-playback-slot');
   const shareAudioBtn = card?.querySelector('.share-audio-btn');
   const listenBtn = card?.querySelector('.listen-btn');
+  const proBtn = card?.querySelector('.pro-audio-btn');
   if (!footer) return;
 
   footer.classList.remove('has-audio-actions');
@@ -292,6 +300,8 @@ function hideAudioActions(message) {
   shareAudioBtn?.setAttribute('hidden', '');
   listenBtn?.classList.remove('is-ready');
   shareAudioBtn?.classList.remove('is-ready');
+  proBtn?.setAttribute('hidden', '');
+  proBtn?.classList.remove('is-ready', 'is-playing', 'is-loading');
 }
 
 function revealAudioActions(message) {
@@ -304,6 +314,7 @@ function revealAudioActions(message) {
   const footer = card?.querySelector('.message-footer-actions');
   const playbackSlot = card?.querySelector('.message-playback-slot');
   const shareAudioBtn = card?.querySelector('.share-audio-btn');
+  const proBtn = card?.querySelector('.pro-audio-btn');
   if (!footer) return;
 
   footer.classList.add('has-audio-actions');
@@ -312,6 +323,14 @@ function revealAudioActions(message) {
   shareAudioBtn?.removeAttribute('hidden');
   card?.querySelector('.listen-btn')?.classList.add('is-ready');
   shareAudioBtn?.classList.add('is-ready');
+  if (proBtn) {
+    if (supportsProVoice(message.targetLanguage)) {
+      proBtn.removeAttribute('hidden');
+      proBtn.classList.add('is-ready');
+    } else {
+      proBtn.setAttribute('hidden', '');
+    }
+  }
 }
 
 function startBackgroundAudio(message) {
@@ -336,6 +355,7 @@ function cancelMessageAudio(msg) {
 }
 
 function invalidateMessageAudio(msg) {
+  if (proPlayback?.messageId === msg.id) stopProPlayback();
   for (const url of msg._audioUrls || []) {
     URL.revokeObjectURL(url);
   }
@@ -349,10 +369,12 @@ function invalidateMessageAudio(msg) {
   msg._audioTailUrl = null;
   msg._audioPartial = false;
   msg._audioKey = null;
+  msg._proAudioUrl = null;
   hideAudioActions(msg);
 }
 
 function stopPlayback() {
+  stopProPlayback();
   playbackEpoch++;
   const audio = state.currentAudio;
   if (audio) {
@@ -540,12 +562,13 @@ function prefetchHeadAudioMidStream(message) {
   );
 }
 
-async function fetchSpeakBlob(msg, text, controller, { attempts = 2 } = {}) {
+async function fetchSpeakBlob(msg, text, controller, { attempts = 2, quality = null } = {}) {
   const lang = msg.targetLanguage;
   const mode = speakModeForMessage(msg);
   const slot = activeSpeakProfileSlot();
 
-  const prefetched = speakBlobPrefetch.get(speakPrefetchKey(text, lang, mode, slot));
+  // The mid-stream prefetch cache only holds fast-quality audio.
+  const prefetched = quality ? null : speakBlobPrefetch.get(speakPrefetchKey(text, lang, mode, slot));
   if (prefetched) {
     try {
       return await prefetched;
@@ -568,6 +591,7 @@ async function fetchSpeakBlob(msg, text, controller, { attempts = 2 } = {}) {
           lang,
           voiceMode: mode,
           slot,
+          ...(quality ? { quality } : {}),
         }),
         signal: controller.signal,
       });
@@ -766,6 +790,81 @@ async function toggleTranslationAudio(msg, btn) {
   await beginTranslationPlayback(msg, btn);
 }
 
+function stopProPlayback() {
+  const active = proPlayback;
+  if (!active) return;
+  proPlayback = null;
+
+  const { audio } = active;
+  audio.onended = null;
+  audio.onerror = null;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+
+  const btn = document.querySelector(
+    `.message-card[data-message-id="${active.messageId}"] .pro-audio-btn`,
+  );
+  btn?.classList.remove('is-playing', 'is-loading');
+}
+
+// On-demand Professional Voice Clone audio for this exact text. Fetched only
+// when the button is pressed (PVC on multilingual v2 is slower and pricier),
+// cached on the message, and completely separate from the fast audio.
+async function toggleProAudio(msg, btn) {
+  acknowledgeActionButton(btn);
+  if (btn?.dataset.busy === '1') return;
+
+  if (proPlayback?.messageId === msg.id) {
+    stopProPlayback();
+    releaseActionButtonFocus(btn);
+    return;
+  }
+
+  if (btn) btn.dataset.busy = '1';
+  stopPlayback();
+  btn?.classList.add('is-loading');
+
+  try {
+    if (!msg._proAudioUrl) {
+      const controller = new AbortController();
+      const blob = await fetchSpeakBlob(msg, msg.translated, controller, {
+        attempts: 1,
+        quality: 'pro',
+      });
+      msg._proAudioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(blob));
+    }
+
+    const audio = createPlaybackAudio(msg._proAudioUrl);
+    proPlayback = { audio, messageId: msg.id };
+    audio.onended = () => {
+      if (proPlayback?.audio === audio) stopProPlayback();
+    };
+    audio.onerror = () => {
+      if (proPlayback?.audio !== audio) return;
+      stopProPlayback();
+      showToast('Playback failed');
+    };
+
+    await waitForAudioReady(audio);
+    if (proPlayback?.audio !== audio) return;
+
+    btn?.classList.remove('is-loading');
+    btn?.classList.add('is-playing');
+    await audio.play();
+  } catch (err) {
+    stopProPlayback();
+    btn?.classList.remove('is-playing');
+    if (err?.name !== 'AbortError') {
+      showToast(err?.message || 'Pro audio failed');
+    }
+  } finally {
+    btn?.classList.remove('is-loading');
+    if (btn) delete btn.dataset.busy;
+    releaseActionButtonFocus(btn);
+  }
+}
+
 function finishPlayback(msg, epoch) {
   if (epoch !== playbackEpoch) return;
   state.currentAudio = null;
@@ -934,6 +1033,8 @@ async function init() {
   void purgeStalePendingRecordings();
   void refreshPendingBanner();
   wakePendingQueue();
+  // Have a live-transcription credential ready before the first mic tap.
+  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 async function ensureAuthenticated() {
@@ -1152,6 +1253,8 @@ function onLanguagesChanged() {
   saveLanguages();
   void clearAllPendingRecordings();
   updateComposeState();
+  // The live-transcription credential embeds the language pair; replace it.
+  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 function detectBrowser() {
@@ -1306,8 +1409,13 @@ function isRecordingUiActive() {
   return composeBoxEl?.classList.contains('is-recording');
 }
 
+function setConnectingUI(active) {
+  composeBoxEl?.classList.toggle('is-connecting', Boolean(active));
+}
+
 function setRecordingUI(active) {
   composeBoxEl?.classList.toggle('is-recording', Boolean(active));
+  if (!active) setConnectingUI(false);
   if (active) {
     requestAnimationFrame(() => {
       ensureComposeLevelBars(true);
@@ -1838,22 +1946,26 @@ async function sendTextForTranslation({ text, signal, requestId, mode = 'active'
   await applyTranslationResult(data, { requestId });
 }
 
-async function fetchTranscriptFromAudio({ blob, mimeType }) {
+// Ephemeral credentials for the direct browser → OpenAI live transcription
+// connection. Minting one takes a full server round trip (Vercel → OpenAI),
+// so a fresh secret is kept ready ahead of time — at startup, after language
+// changes, after each recording, and on mic pointerdown — and the recording
+// only consumes it. Each secret authorizes one session and expires within
+// minutes, hence the freshness check instead of a plain one-shot cache.
+let realtimeSecret = null; // { promise, pairKey, expiresAt }
+
+const REALTIME_SECRET_MIN_TTL_MS = 60_000;
+
+async function fetchRealtimeSecret() {
   const { lang1, lang2 } = getLanguagePair();
-  const form = new FormData();
-  form.append('audio', blob, `audio.${mimeType.includes('mp4') ? 'mp4' : 'webm'}`);
-  form.append('lang1', lang1);
-  form.append('lang2', lang2);
-
-  const timeoutMs = Math.min(90000, Math.max(15000, 12000 + (blob?.size || 0) / 8));
-
   const res = await withTimeout(
-    apiFetch('/api/transcribe', {
+    apiFetch('/api/realtime-session', {
       method: 'POST',
-      body: form,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lang1, lang2 }),
     }),
-    timeoutMs,
-    'Transcription timed out',
+    12000,
+    'Could not start live transcription — check your internet',
     () => {},
   );
 
@@ -1867,11 +1979,42 @@ async function fetchTranscriptFromAudio({ blob, mimeType }) {
   if (res.status === 401) {
     throw new Error('Session expired — sign in again and resend');
   }
-  if (!res.ok) {
-    throw new Error(data.error || 'Could not transcribe audio');
+  if (!res.ok || !data.clientSecret) {
+    throw new Error(data.error || 'Could not start live transcription');
   }
+  return data;
+}
 
-  return data.rawText?.trim() || '';
+function realtimeSecretIsFresh(entry, pairKey) {
+  if (!entry || entry.pairKey !== pairKey) return false;
+  // While the fetch is still in flight expiresAt is unknown; trust it.
+  if (!entry.expiresAt) return true;
+  return entry.expiresAt * 1000 - Date.now() > REALTIME_SECRET_MIN_TTL_MS;
+}
+
+function warmRealtimeSecret() {
+  if (!languagesReady()) return Promise.reject(new Error('Select two languages'));
+  const { lang1, lang2 } = getLanguagePair();
+  const pairKey = languagePairKey(lang1, lang2);
+  if (realtimeSecretIsFresh(realtimeSecret, pairKey)) return realtimeSecret.promise;
+
+  const entry = { pairKey, expiresAt: 0, promise: null };
+  entry.promise = fetchRealtimeSecret().then((data) => {
+    entry.expiresAt = Number(data.expiresAt) || 0;
+    return data.clientSecret;
+  });
+  // A failed prefetch must not leave a poisoned cache entry behind.
+  entry.promise.catch(() => {
+    if (realtimeSecret === entry) realtimeSecret = null;
+  });
+  realtimeSecret = entry;
+  return entry.promise;
+}
+
+function takeRealtimeSecret() {
+  const promise = warmRealtimeSecret();
+  realtimeSecret = null;
+  return promise;
 }
 
 // If a warmed-up mic stream is not used by a recording within this window
@@ -1898,6 +2041,9 @@ function cancelWarmMicRelease() {
 function warmMicForRecording() {
   if (!languagesReady() || state.isProcessing || state.isRecording || state.stoppingRecording) return;
   primeMicAudioOnGesture();
+  // Start minting the live-transcription credential in parallel with the mic
+  // permission prompt so the session can connect the moment recording starts.
+  warmRealtimeSecret().catch(() => {});
   void ensureMicStream()
     .then(() => scheduleWarmMicRelease())
     .catch(() => {});
@@ -1919,14 +2065,6 @@ function estimateProcessingMs(recordingMs, blobBytes) {
   const audioSeconds = Math.max(recordingMs / 1000, blobBytes / 11000, 0.5);
 
   const t = Math.min(audioSeconds / 20, 1);
-  return Math.round(MIN_MS + t * (MAX_MS - MIN_MS));
-}
-
-function estimateTranscribeMs(recordingMs, blobBytes) {
-  const MIN_MS = 1000;
-  const MAX_MS = 3500;
-  const audioSeconds = Math.max(recordingMs / 1000, blobBytes / 14000, 0.4);
-  const t = Math.min(audioSeconds / 12, 1);
   return Math.round(MIN_MS + t * (MAX_MS - MIN_MS));
 }
 
@@ -2654,39 +2792,6 @@ function bindPendingQueue() {
   });
 }
 
-async function sendRecordingForTranslation({ blob, mimeType, recordingMs }) {
-  abortActiveConverse();
-  const controller = new AbortController();
-  activeConverseController = controller;
-  const requestId = ++latestTranslationRequest;
-  const { lang1, lang2 } = getLanguagePair();
-
-  try {
-    const data = await submitRecording({
-      blob,
-      mimeType,
-      recordingMs,
-      lang1,
-      lang2,
-      context: buildConversationContext(),
-      signal: controller.signal,
-      requestId,
-    });
-    if (requestId !== latestTranslationRequest) return;
-    await applyTranslationResult(data, {
-      requestId,
-      sourceRecording: { blob, mimeType, recordingMs },
-    });
-  } catch (err) {
-    if (err?.name === 'AbortError') return;
-    throw err;
-  } finally {
-    if (activeConverseController === controller) {
-      activeConverseController = null;
-    }
-  }
-}
-
 async function beginRecording() {
   if (!languagesReady()) {
     showToast('Select two languages');
@@ -2703,41 +2808,77 @@ async function beginRecording() {
   latestTranslationRequest++;
   stopPlayback();
   clearMicVoicePulse();
-  state.audioChunks = [];
   setRecordingUI(true);
+  // Loading state until the live transcription session is actually capturing
+  // audio; the sound bars only appear once speech is being recorded.
+  setConnectingUI(true);
   updateComposeState();
 
+  // The credential fetch races the mic prompt; both are needed to connect.
+  const secretPromise = takeRealtimeSecret();
+  secretPromise.catch(() => {});
+
+  let stream;
   try {
-    const stream = await ensureMicStream();
+    stream = await ensureMicStream();
     if (sessionId !== recordingSessionId) {
       stream.getTracks().forEach((t) => t.stop());
       return;
     }
+  } catch (err) {
+    if (sessionId !== recordingSessionId) return;
+    setRecordingUI(false);
+    showMicHelp(err);
+    releaseMic();
+    updateComposeState();
+    return;
+  }
 
-    prepareMicMeter(stream);
+  prepareMicMeter(stream);
+  state.mediaStream = stream;
+  recordingDraftBase = getDraftText();
 
-    // 32kbps Opus is plenty for speech transcription and shrinks uploads ~3x.
-    const mimeType = getRecordingMimeType();
-    const recorderOptions = { audioBitsPerSecond: 32000 };
-    if (mimeType) recorderOptions.mimeType = mimeType;
-    state.mediaRecorder = new MediaRecorder(stream, recorderOptions);
+  try {
+    // Mic audio streams straight to OpenAI over WebRTC; transcript deltas
+    // arrive on the data channel while the user speaks. There is no fallback:
+    // if this connection fails, the recording fails.
+    const transcriber = await connectRealtimeTranscriber({
+      stream,
+      clientSecret: secretPromise,
+      onText: (text) => {
+        if (sessionId !== recordingSessionId) return;
+        if (!state.isRecording && !state.stoppingRecording) return;
+        dictationInputEl.value = recordingDraftBase
+          ? `${recordingDraftBase} ${text}`
+          : text;
+        resizeDictationInput();
+      },
+      onError: (err) => {
+        if (sessionId !== recordingSessionId) return;
+        if (!state.isRecording) return;
+        showToast(err.message || 'Live transcription failed');
+        void cancelRecording();
+      },
+    });
 
-    state.mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) state.audioChunks.push(e.data);
-    };
+    if (sessionId !== recordingSessionId) {
+      transcriber.cancel();
+      return;
+    }
 
-    state.mediaRecorder.start(250);
+    realtimeTranscriber = transcriber;
     state.recordingStartedAt = Date.now();
     state.isRecording = true;
-    state.mediaStream = stream;
     cancelWarmMicRelease();
 
+    // Audio is flowing to the transcriber from this point: reveal the bars.
+    setConnectingUI(false);
     updateComposeState();
     startRecordingProgress();
   } catch (err) {
     if (sessionId !== recordingSessionId) return;
     setRecordingUI(false);
-    showMicHelp(err);
+    showToast(err.message || 'Could not start live transcription');
     releaseMic();
     updateComposeState();
   }
@@ -2752,20 +2893,18 @@ async function cancelRecording() {
   stopRecordingProgress();
   setRecordingUI(false);
 
-  try {
-    const recorder = state.mediaRecorder;
-    if (recorder && recorder.state !== 'inactive') {
-      await waitForRecorderStop(recorder);
-    }
-  } catch {
-    // ignore stop errors while cancelling
-  }
+  realtimeTranscriber?.cancel();
+  realtimeTranscriber = null;
 
-  state.audioChunks = [];
-  cleanupRecorder();
+  // Discard the live transcript preview and restore the pre-recording draft.
+  dictationInputEl.value = recordingDraftBase;
+  state.draftText = recordingDraftBase;
+  resizeDictationInput();
+
   teardownMicMeter();
   releaseMicTracks();
   updateComposeState();
+  if (languagesReady()) warmRealtimeSecret().catch(() => {});
 }
 
 async function acceptRecording({ autoLimit = false } = {}) {
@@ -2773,7 +2912,6 @@ async function acceptRecording({ autoLimit = false } = {}) {
   if (!state.isRecording) return;
 
   state.stoppingRecording = true;
-  const mimeType = state.mediaRecorder?.mimeType || 'audio/webm';
 
   try {
     if (!autoLimit) {
@@ -2784,44 +2922,51 @@ async function acceptRecording({ autoLimit = false } = {}) {
     stopRecordingProgress();
     setRecordingUI(false);
 
-    const recorder = state.mediaRecorder;
-    if (recorder && recorder.state !== 'inactive') {
-      await waitForRecorderStop(recorder);
-    }
-
-    const blob = buildRecordingBlob(mimeType);
-    state.audioChunks = [];
-    cleanupRecorder();
-    teardownMicMeter();
-    releaseMicTracks();
+    const transcriber = realtimeTranscriber;
+    realtimeTranscriber = null;
 
     const recordingMs = clampRecordingMs(
       state.recordingStartedAt ? Date.now() - state.recordingStartedAt : 0,
     );
 
-    if (!autoLimit && (recordingMs < 450 || blob.size < 400)) {
+    if (!autoLimit && recordingMs < 450) {
+      transcriber?.cancel();
+      dictationInputEl.value = recordingDraftBase;
+      state.draftText = recordingDraftBase;
+      resizeDictationInput();
+      teardownMicMeter();
+      releaseMicTracks();
       showToast('Recording too short');
       updateComposeState();
       return;
     }
 
-    pendingSourceRecording = { blob, mimeType, recordingMs };
-
     updateComposeState();
-    startComposeLoadingDots(loadingDotCapFromMs(estimateTranscribeMs(recordingMs, blob.size)));
+    startComposeLoadingDots(loadingDotCapFromMs(2500));
 
+    // Most of the transcript already streamed in live; stop() only commits
+    // the last audio segment and waits briefly for its final text.
     let transcript = '';
     try {
-      transcript = await fetchTranscriptFromAudio({ blob, mimeType });
+      transcript = transcriber ? await transcriber.stop() : '';
     } catch (err) {
-      showToast(err.message || 'Could not transcribe audio');
+      showToast(err.message || 'Live transcription failed');
       return;
     } finally {
       stopComposeLoadingDots();
+      teardownMicMeter();
+      releaseMicTracks();
     }
+
+    // Rebuild the draft from its pre-recording base so appendToDraft can
+    // combine, prefetch the translation, and place the caret consistently.
+    dictationInputEl.value = recordingDraftBase;
+    state.draftText = recordingDraftBase;
+    resizeDictationInput();
 
     if (!transcript.trim()) {
       showToast('No speech detected — try again');
+      updateComposeState();
       return;
     }
 
@@ -2829,48 +2974,14 @@ async function acceptRecording({ autoLimit = false } = {}) {
   } finally {
     state.stoppingRecording = false;
     updateComposeState();
+    // Mint the next credential now so the next mic tap connects immediately.
+    if (languagesReady()) warmRealtimeSecret().catch(() => {});
   }
-}
-
-async function waitForRecorderStop(mediaRecorder) {
-  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-
-  await new Promise((resolve) => {
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      setTimeout(resolve, RECORDER_STOP_FLUSH_MS);
-    };
-
-    const timeout = setTimeout(finish, 5000);
-
-    mediaRecorder.onstop = finish;
-
-    try {
-      if (mediaRecorder.state === 'recording' && typeof mediaRecorder.requestData === 'function') {
-        mediaRecorder.requestData();
-      }
-      mediaRecorder.stop();
-    } catch {
-      finish();
-    }
-  });
-}
-
-function buildRecordingBlob(mimeType) {
-  return new Blob(state.audioChunks, { type: mimeType });
-}
-
-function cleanupRecorder() {
-  state.mediaRecorder = null;
 }
 
 function releaseMicTracks() {
   state.mediaStream?.getTracks().forEach((t) => t.stop());
   state.mediaStream = null;
-  state.mediaRecorder = null;
 }
 
 function releaseMic() {
@@ -2883,7 +2994,6 @@ function resetMicUI() {
   stopComposeLoadingDots();
   stopLoadingDots();
   stopRecordingProgress();
-  cleanupRecorder();
   state.isProcessing = false;
   state.stoppingRecording = false;
   state.isRecording = false;
@@ -2960,6 +3070,7 @@ function createMessageCard(msg) {
   const hasAudio = Boolean(msg.audioUrl);
   const audioActionsClass = hasAudio ? ' has-audio-actions' : '';
   const hideFooter = hideTextActions || !hasAudio;
+  const showProBtn = hasAudio && supportsProVoice(msg.targetLanguage);
 
   el.innerHTML = `
     <div class="message-bubble">
@@ -2975,6 +3086,9 @@ function createMessageCard(msg) {
         </div>
       </div>
       <div class="message-footer-actions${audioActionsClass}"${hideFooter ? ' hidden' : ''}>
+        <button type="button" class="icon-btn pro-audio-btn"${showProBtn ? '' : ' hidden'} title="Pro voice" aria-label="Pro voice">
+          <span class="pro-audio-label">PRO</span>
+        </button>
         <div class="message-playback-slot"${hasAudio ? '' : ' hidden'}>
           <div class="message-playback-side message-playback-side-left">
             <button type="button" class="icon-btn playback-seek-btn playback-restart-btn" hidden title="Start from beginning" aria-label="Start from beginning">
@@ -2998,18 +3112,21 @@ function createMessageCard(msg) {
   if (msg.audioUrl) {
     el.querySelector('.listen-btn')?.classList.add('is-ready');
     el.querySelector('.share-audio-btn')?.classList.add('is-ready');
+    if (showProBtn) el.querySelector('.pro-audio-btn')?.classList.add('is-ready');
   }
 
   syncListenBtnVoiceMode(msg);
 
   const listenBtn = el.querySelector('.listen-btn');
   const shareAudioBtn = el.querySelector('.share-audio-btn');
+  const proBtn = el.querySelector('.pro-audio-btn');
   const copyBtn = el.querySelector('.copy-btn');
   const shareBtn = el.querySelector('.share-btn');
   const restartBtn = el.querySelector('.playback-restart-btn');
 
   listenBtn?.addEventListener('click', () => void toggleTranslationAudio(msg, listenBtn));
   shareAudioBtn?.addEventListener('click', () => void shareClonedAudio(msg, shareAudioBtn));
+  proBtn?.addEventListener('click', () => void toggleProAudio(msg, proBtn));
   restartBtn?.addEventListener('click', () => {
     acknowledgeActionButton(restartBtn);
     restartActivePlayback(msg);

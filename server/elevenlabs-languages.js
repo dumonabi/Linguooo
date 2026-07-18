@@ -5,6 +5,7 @@
 
 export const ELEVEN_MODEL_V3 = 'eleven_v3';
 export const ELEVEN_MODEL_FLASH = 'eleven_flash_v2_5';
+export const ELEVEN_MODEL_V2 = 'eleven_multilingual_v2';
 
 // Flash v2.5 covers every multilingual-v2 language plus hu/no/vi.
 export const CLONED_VOICE_LANGUAGE_CODES = new Set([
@@ -12,6 +13,13 @@ export const CLONED_VOICE_LANGUAGE_CODES = new Set([
   'id', 'it', 'ja', 'ko', 'ms', 'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv',
   'ta', 'tl', 'tr', 'uk', 'vi', 'zh',
 ]);
+
+// The on-demand "pro" voice runs Professional Voice Cloning on multilingual
+// v2 (the model PVC is fine-tuned on), which supports the flash set minus
+// hu/no/vi.
+export const PRO_VOICE_LANGUAGE_CODES = new Set(
+  [...CLONED_VOICE_LANGUAGE_CODES].filter((code) => !['hu', 'no', 'vi'].includes(code)),
+);
 
 const APP_ALIASES = {
   nn: 'no',
@@ -45,6 +53,11 @@ export function resolveCloneVoiceModel(langCode) {
 
 export function supportsClonedVoice(langCode) {
   return Boolean(resolveCloneVoiceModel(langCode));
+}
+
+export function supportsProVoice(langCode) {
+  const mapped = resolveCloneVoiceLanguage(langCode);
+  return Boolean(mapped && PRO_VOICE_LANGUAGE_CODES.has(mapped));
 }
 
 export function listCloneVoiceLanguageCodes() {

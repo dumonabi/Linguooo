@@ -41,41 +41,6 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('#auth-gate')).toBeVisible();
 });
 
-test('phone keypad enters letters with multi-tap cycling', async ({ page }) => {
-  const input = page.locator('#auth-passphrase-input');
-  const keypad = page.locator('#auth-seed-keypad');
-
-  await expect(keypad).toBeHidden();
-  await page.locator('#auth-seed-keypad-toggle').click();
-  await expect(keypad).toBeVisible();
-
-  const abcKey = keypad.locator('[data-letters="abc"]');
-
-  // First tap inserts "a"; a quick second tap cycles it to "b".
-  await abcKey.click();
-  await expect(input).toHaveValue('a');
-  await abcKey.click();
-  await expect(input).toHaveValue('b');
-
-  // After the commit window the same key starts a new letter.
-  await page.waitForTimeout(1100);
-  await abcKey.click();
-  await expect(input).toHaveValue('ba');
-
-  // Tapping a different key commits immediately and appends its letter.
-  await keypad.locator('[data-letters="def"]').click();
-  await expect(input).toHaveValue('bad');
-
-  await keypad.locator('[data-action="backspace"]').click();
-  await expect(input).toHaveValue('ba');
-
-  await keypad.locator('[data-action="space"]').click();
-  await expect(input).toHaveValue('ba ');
-
-  await page.locator('#auth-seed-keypad-toggle').click();
-  await expect(keypad).toBeHidden();
-});
-
 test('binary grid wizard builds the phrase word by word', async ({ page }) => {
   const input = page.locator('#auth-passphrase-input');
   const binary = page.locator('#auth-seed-binary');
@@ -151,82 +116,6 @@ test('binary grid pre-fills from typed words and can step back', async ({ page }
   await expect(back).toBeDisabled();
 });
 
-test('numeric pad enters each word by its number', async ({ page }) => {
-  const input = page.locator('#auth-passphrase-input');
-  const numeric = page.locator('#auth-seed-numeric');
-  const next = numeric.locator('[data-action="next"]');
-  const value = numeric.locator('.auth-num-value');
-  const word = numeric.locator('.auth-num-word');
-
-  await page.locator('#auth-seed-numeric-toggle').click();
-  await expect(numeric).toBeVisible();
-  await expect(next).toHaveText('1 of 12 ›');
-  await expect(value).toHaveText('');
-  await expect(word).toHaveText('');
-
-  // Type 2047 → zoo; a digit that would exceed the max index is ignored;
-  // delete removes digit by digit down to blank.
-  await numeric.locator('[data-digit="2"]').click();
-  await numeric.locator('[data-digit="0"]').click();
-  await numeric.locator('[data-digit="4"]').click();
-  await numeric.locator('[data-digit="7"]').click();
-  await expect(value).toHaveText('2047');
-  await expect(word).toHaveText('zoo');
-  await numeric.locator('[data-digit="1"]').click();
-  await expect(value).toHaveText('2047');
-  await numeric.locator('[data-action="delete"]').click();
-  await expect(value).toHaveText('204');
-  await numeric.locator('[data-action="delete"]').click();
-  await numeric.locator('[data-action="delete"]').click();
-  await numeric.locator('[data-action="delete"]').click();
-  await expect(value).toHaveText('');
-  await expect(word).toHaveText('');
-
-  // Confirm 0 ("abandon") for words 1-11, then 3 ("about") for word 12.
-  for (let i = 0; i < 11; i += 1) await next.click();
-  await expect(next).toHaveText('Use phrase');
-  await numeric.locator('[data-digit="3"]').click();
-  await expect(word).toHaveText('about');
-  await next.click();
-  await expect(input).toHaveValue(
-    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ',
-  );
-  await expect(numeric).toBeHidden();
-});
-
-test('tapping squares or digits scrolls the word preview toward the top', async ({ page }) => {
-  // Watch-sized viewport: the pad fills the screen, so entering values must
-  // pull the word preview up to keep it visible.
-  await page.setViewportSize({ width: 205, height: 251 });
-  await page.locator('#auth-seed-numeric-toggle').click();
-  const displayBefore = (await page.locator('.auth-num-display').boundingBox())?.y ?? 0;
-  await page.locator('[data-digit="1"]').click();
-  await expect
-    .poll(async () => (await page.locator('.auth-num-display').boundingBox())?.y ?? 999)
-    .toBeLessThan(Math.min(displayBefore, 60));
-
-  await page.locator('#auth-seed-binary-toggle').click();
-  await page.locator('#auth-seed-binary .auth-bit').first().click();
-  await expect
-    .poll(async () => (await page.locator('.auth-bit-preview').boundingBox())?.y ?? 999)
-    .toBeLessThan(60);
-});
-
-test('watch-sized screens swap the textarea for a single-line input', async ({ page }) => {
-  await page.setViewportSize({ width: 205, height: 251 });
-  await page.reload();
-  const input = page.locator('#auth-passphrase-input');
-  await expect(input).toBeVisible();
-  // watchOS Quickboard mishandles textareas (opens without the current
-  // value); a single-line input works, so the element is swapped on watch.
-  expect(await input.evaluate((el) => el.tagName)).toBe('INPUT');
-
-  // The other input methods still work through the swapped element.
-  await page.locator('#auth-seed-keypad-toggle').click();
-  await page.locator('[data-letters="abc"]').click();
-  await expect(input).toHaveValue('a');
-});
-
 test('voice dictation appends words snapped to the BIP39 wordlist', async ({ page }) => {
   const input = page.locator('#auth-passphrase-input');
   const micBtn = page.locator('#auth-seed-mic');
@@ -247,7 +136,7 @@ test('voice dictation appends words snapped to the BIP39 wordlist', async ({ pag
 });
 
 test('a speech service that never delivers audio reports guidance instead of hanging', async ({ page }) => {
-  // Simulate watchOS: the constructor exists but no events ever fire.
+  // The constructor exists but no events ever fire (broken speech service).
   const micBtn = page.locator('#auth-seed-mic');
   await micBtn.click();
   await expect(micBtn).toHaveClass(/is-listening/);

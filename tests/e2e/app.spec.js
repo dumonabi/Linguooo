@@ -10,12 +10,14 @@ async function prepareApp(page, apiOptions = {}) {
   await expect(page.locator('#compose-mic')).toBeVisible();
 }
 
-async function recordOnce(page, { holdMs = 550, translate = true } = {}) {
+async function recordOnce(page, { holdMs = 700, translate = true } = {}) {
   const composeBox = page.locator('#compose-box');
   const mic = page.locator('#compose-mic');
   await expect(mic).toBeEnabled();
   await mic.click();
   await expect(composeBox).toHaveClass(/is-recording/, { timeout: 600 });
+  // The send button enables once the live transcription session is connected.
+  await expect(page.locator('#recording-send')).toBeEnabled();
   await page.waitForTimeout(holdMs);
   await page.locator('#recording-send').click();
   await expect(composeBox).not.toHaveClass(/is-recording/, { timeout: 8000 });
@@ -40,6 +42,58 @@ test.describe('Lingu.ooo', () => {
     await page.locator('#compose-mic').click();
     await expect(composeBox).toHaveClass(/is-recording/);
     expect(Date.now() - startedAt).toBeLessThan(1200);
+  });
+
+  test('shows a connecting state until live transcription is capturing', async ({ page }) => {
+    await prepareApp(page);
+    // Hold the realtime connection for a moment to observe the loading phase.
+    await page.route('https://api.openai.com/v1/realtime/calls*', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await route.fulfill({ status: 200, contentType: 'application/sdp', body: 'v=0\r\nmock-answer' });
+    });
+
+    const composeBox = page.locator('#compose-box');
+    await page.locator('#compose-mic').click();
+
+    // While connecting: loading spinner, no sound bars, send not yet available.
+    await expect(composeBox).toHaveClass(/is-connecting/);
+    await expect(page.locator('#compose-connecting')).toBeVisible();
+    await expect(page.locator('#compose-level')).toBeHidden();
+    await expect(page.locator('#recording-send')).toBeDisabled();
+
+    // Once audio is being captured, the bars replace the spinner.
+    await expect(composeBox).not.toHaveClass(/is-connecting/, { timeout: 4000 });
+    await expect(page.locator('#compose-level')).toBeVisible();
+    await expect(page.locator('#compose-connecting')).toBeHidden();
+    await expect(page.locator('#recording-send')).toBeEnabled();
+
+    await page.locator('#recording-cancel').click();
+    await expect(composeBox).not.toHaveClass(/is-recording/);
+  });
+
+  test('streams the live transcript into the compose box while recording', async ({ page }) => {
+    await prepareApp(page);
+    await page.locator('#compose-mic').click();
+    await expect(page.locator('#recording-send')).toBeEnabled();
+
+    // Transcript deltas arriving over the realtime channel appear immediately.
+    await page.evaluate(() => {
+      window.__emitRealtime({
+        type: 'conversation.item.input_audio_transcription.delta',
+        item_id: 'live_1',
+        delta: 'hola ',
+      });
+      window.__emitRealtime({
+        type: 'conversation.item.input_audio_transcription.delta',
+        item_id: 'live_1',
+        delta: 'mundo',
+      });
+    });
+    await expect(page.locator('#dictation-input')).toHaveValue('hola mundo');
+
+    // Cancelling discards the live preview.
+    await page.locator('#recording-cancel').click();
+    await expect(page.locator('#dictation-input')).toHaveValue('');
   });
 
   test('displays a translation after recording', async ({ page }) => {

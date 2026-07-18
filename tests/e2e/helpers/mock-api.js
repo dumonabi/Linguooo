@@ -19,9 +19,26 @@ export async function setupApiMocks(page, options = {}) {
   let translateCount = 0;
   let transcribeCount = 0;
 
+  // SDP answer for the (mocked) direct browser → OpenAI realtime connection.
+  await page.route('https://api.openai.com/v1/realtime/calls*', async (route) => {
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/sdp',
+      body: 'v=0\r\nmock-answer',
+    });
+  });
+
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
+
+    if (path === '/api/realtime-session') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ clientSecret: 'test-secret', expiresAt: Date.now() + 300000 }),
+      });
+    }
 
     if (path === '/api/health') {
       return route.fulfill({
@@ -106,6 +123,12 @@ export async function setupApiMocks(page, options = {}) {
             canRecordMore: true,
             totalDurationMs: 0,
             targetDurationMs: 90000,
+            proSampleCount: 0,
+            proTotalDurationMs: 0,
+            proMinTotalMs: 1800000,
+            proMaxTotalMs: 10800000,
+            pvcSubmitted: false,
+            proSamples: [],
           },
         }),
       });
@@ -160,6 +183,12 @@ export async function setupApiMocks(page, options = {}) {
           canRecordMore: true,
           totalDurationMs: 0,
           targetDurationMs: 90000,
+          proSampleCount: 0,
+          proTotalDurationMs: 0,
+          proMinTotalMs: 1800000,
+          proMaxTotalMs: 10800000,
+          pvcSubmitted: false,
+          proSamples: [],
         }),
       });
     }

@@ -32,7 +32,8 @@ test('chunked audio: long translations request head and tail separately', async 
   await expect(page.locator('#compose-mic')).toBeVisible();
 
   await page.locator('#compose-mic').click();
-  await page.waitForTimeout(550);
+  await expect(page.locator('#recording-send')).toBeEnabled();
+  await page.waitForTimeout(700);
   await page.locator('#recording-send').click();
   await expect(page.locator('#dictation-input')).not.toHaveValue('', { timeout: 8000 });
   await page.locator('#dictation-translate').click();

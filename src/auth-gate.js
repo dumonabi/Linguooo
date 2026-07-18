@@ -5,7 +5,7 @@ import {
   setStoredUser,
 } from './auth.js';
 import { attachBip39WordAutocomplete } from './bip39-word-autocomplete.js';
-import { attachSeedInputExtras, swapTextareaForWatchInput } from './seed-input-extras.js';
+import { attachSeedInputExtras } from './seed-input-extras.js';
 import { $ } from './dom-utils.js';
 
 let seedExtras = null;
@@ -61,7 +61,6 @@ async function completeAuth({ gate, passphrase, user, sessionToken, onSuccess, o
     if (normalized) saveRecoveryPhrase(user.id, normalized);
   }
   gate.hidden = true;
-  document.documentElement.classList.remove('auth-gate-open');
   if (onUnauthorized) {
     window.removeEventListener('lingo:unauthorized', onUnauthorized);
   }
@@ -77,9 +76,7 @@ export function mountAuthGate({
 
   const signInForm = $('#auth-signin-form', gate);
   const registerForm = $('#auth-register-form', gate);
-  // On watch-sized screens the textarea is swapped for a single-line input
-  // before anything binds to it (watchOS Quickboard mishandles textareas).
-  const passphraseInput = swapTextareaForWatchInput($('#auth-passphrase-input', gate));
+  const passphraseInput = $('#auth-passphrase-input', gate);
   const superPasswordInput = $('#auth-super-password', gate);
   const errorEl = $('#auth-error', gate);
   const copyBtn = $('#auth-copy-mnemonic', gate);
@@ -98,10 +95,6 @@ export function mountAuthGate({
     seedExtras = attachSeedInputExtras({
       textarea: passphraseInput,
       micBtn: $('#auth-seed-mic', gate),
-      keypadToggle: $('#auth-seed-keypad-toggle', gate),
-      keypadEl: $('#auth-seed-keypad', gate),
-      numericToggle: $('#auth-seed-numeric-toggle', gate),
-      numericEl: $('#auth-seed-numeric', gate),
       binaryToggle: $('#auth-seed-binary-toggle', gate),
       binaryEl: $('#auth-seed-binary', gate),
       onError: (message) => showError(errorEl, message),
@@ -222,7 +215,6 @@ export function mountAuthGate({
 export function openAuthGate(gate) {
   if (!gate) return;
   gate.hidden = false;
-  document.documentElement.classList.add('auth-gate-open');
   showError($('#auth-error', gate), '');
   setActiveTab(gate, 'signin');
   $('#auth-passphrase-input', gate)?.focus();

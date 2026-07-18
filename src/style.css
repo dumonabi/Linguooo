@@ -25,10 +25,11 @@
   --lang-bar-rect-height: var(--page-button-height);
   --lang-bar-third: calc((var(--layout-ref) - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
   --lang-bar-slot-width: var(--lang-bar-third);
-  --ui-text-size: min(
-    calc(var(--lang-bar-rect-height) * 0.62),
-    calc(var(--lang-bar-slot-width) / 5.35)
-  );
+  /* Main text scale, set by character density: the app's monospace glyphs
+     measure 0.5625em (0.6em minus the -0.04em tracking), so layout-ref /
+     22.5 fits exactly 40 characters across the full layout width — 10 per
+     quarter-width frame (previously ~28 across). */
+  --ui-text-size: calc(var(--layout-ref) / 22.5);
   --ui-text-leading: 1.12;
 }
 
@@ -1189,6 +1190,49 @@ html.user-profile-menu-open body {
   overflow: hidden;
 }
 
+/* While the live transcription session connects, the wave is replaced by a
+   big spinning loader (unmistakably "loading", never "recording"). The green
+   sound bars taking its place are the signal that audio is being captured
+   and speech can start. Sized off --page-symbol-size so it stays prominent
+   on phones. */
+.compose-connecting {
+  display: none;
+  position: relative;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  height: var(--page-symbol-size);
+  color: rgba(253, 224, 131, 0.92);
+}
+
+.compose-box.is-recording.is-connecting .compose-level {
+  display: none;
+}
+
+.compose-box.is-recording.is-connecting .compose-connecting {
+  display: flex;
+}
+
+.compose-box.is-recording.is-connecting .compose-recording-send {
+  opacity: 0.4;
+}
+
+.compose-connecting-spinner {
+  width: calc(var(--page-symbol-size) * 0.82);
+  height: calc(var(--page-symbol-size) * 0.82);
+  animation: compose-connecting-spin 0.9s linear infinite;
+}
+
+.compose-connecting-spinner-track {
+  opacity: 0.22;
+}
+
+@keyframes compose-connecting-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .compose-level-bar {
   width: 3px;
   height: calc(var(--page-symbol-size) * 0.85);
@@ -1706,6 +1750,69 @@ html.user-profile-menu-open body {
   animation: listenBtnReveal 0.35s ease;
 }
 
+/* On-demand Professional Voice Clone playback: a "PRO" badge on the left of
+   the footer, symmetric with the share-audio button on the right. Amber
+   while the (slower) pro generation is in flight, filled while playing. */
+.message-footer-actions .pro-audio-btn {
+  grid-column: 1;
+  justify-self: start;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  min-width: var(--page-symbol-size);
+  min-height: var(--page-symbol-size);
+  padding: 0.2rem;
+  color: var(--accent-light);
+}
+
+.message-footer-actions .pro-audio-btn[hidden] {
+  display: none !important;
+}
+
+.pro-audio-btn.is-ready {
+  animation: listenBtnReveal 0.35s ease;
+}
+
+.pro-audio-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.18em 0.5em;
+  border: 1.5px solid currentColor;
+  border-radius: 8px;
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: calc(var(--page-symbol-size) * 0.34);
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.pro-audio-btn.is-loading {
+  pointer-events: none;
+  color: rgba(253, 224, 131, 0.92);
+  animation: pro-audio-loading 1.1s ease-in-out infinite;
+}
+
+@keyframes pro-audio-loading {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.pro-audio-btn.is-playing .pro-audio-label {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+
+@media (hover: hover) {
+  .message-footer-actions .pro-audio-btn:hover:not(:disabled) {
+    color: #ecfdf5;
+    background: transparent;
+    border: none;
+    transform: scale(1.06);
+  }
+}
+
 .playback-seek-btn {
   min-width: var(--page-symbol-size);
   min-height: var(--page-symbol-size);
@@ -1953,7 +2060,7 @@ html.user-profile-menu-open body {
     color: #ecfdf5;
   }
 
-  .icon-btn:hover:not(.listen-btn):not(.copy-btn-inline):not(.share-btn-inline):not(.share-audio-btn):not(:disabled) {
+  .icon-btn:hover:not(.listen-btn):not(.copy-btn-inline):not(.share-btn-inline):not(.share-audio-btn):not(.pro-audio-btn):not(:disabled) {
     color: var(--text);
     background: rgba(34, 197, 94, 0.12);
     border-color: rgba(34, 197, 94, 0.3);
@@ -2039,7 +2146,7 @@ html.user-profile-menu-open body {
   padding: 1.5rem;
   background: rgba(6, 12, 10, 0.88);
   backdrop-filter: blur(8px);
-  /* Cards taller than tiny viewports (e.g. a watch browser) must scroll. */
+  /* Cards taller than the viewport must scroll. */
   overflow-y: auto;
 }
 
@@ -2056,34 +2163,6 @@ html.user-profile-menu-open body {
   text-align: center;
   /* Centers like flex alignment but never clips when the card overflows. */
   margin: auto;
-}
-
-/* Tiny screens (Apple Watch): the watch browser scrolls the document, not
-   nested overflow containers, and clips position: fixed overlays. Put the
-   auth gate into normal flow and hide the app behind it so the whole page
-   scrolls with the crown. */
-@media (max-width: 330px) {
-  #auth-gate {
-    position: static;
-    display: block;
-    min-height: 100dvh;
-    padding: 0.4rem;
-    background: #000000;
-    backdrop-filter: none;
-    overflow: visible;
-  }
-
-  #auth-gate[hidden] {
-    display: none;
-  }
-
-  .auth-card {
-    padding: 1rem 0.75rem;
-  }
-
-  html.auth-gate-open #app {
-    display: none;
-  }
 }
 
 .auth-logo {
@@ -2149,17 +2228,8 @@ html.user-profile-menu-open body {
   padding-bottom: 4.2rem;
 }
 
-/* On watch-sized screens the textarea is swapped for a single-line input
-   (watchOS Quickboard mishandles textareas). An input centers its text in
-   the content box, so it needs extra height to keep the text visible above
-   the tools row. */
-.auth-passphrase-wrap input.auth-textarea {
-  min-height: 7rem;
-  resize: none;
-}
-
-/* The three input tools (mic, keypad, binary squares) span the full width of
-   the box with big touch targets — the phrase is often entered on a watch. */
+/* The input tools (mic, binary squares) span the full width of the box with
+   big touch targets. */
 .auth-input-tools {
   position: absolute;
   left: 0.55rem;
@@ -2216,53 +2286,11 @@ html.user-profile-menu-open body {
   50% { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0); }
 }
 
-.auth-keypad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.4rem;
-  margin-bottom: 0.85rem;
-}
-
-.auth-keypad[hidden] {
-  display: none;
-}
-
-.auth-keypad-key {
-  min-height: 2.9rem;
-  padding: 0.4rem 0;
-  font: inherit;
-  font-size: 1.02rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.auth-keypad-key:active {
-  background: rgba(74, 222, 128, 0.16);
-}
-
-.auth-keypad-key.is-cycling {
-  color: var(--accent-light);
-  border-color: rgba(74, 222, 128, 0.6);
-  background: rgba(74, 222, 128, 0.1);
-}
-
-.auth-keypad-space {
-  grid-column: span 3;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-
 /* Binary seed grid (ported from bip.lol, laid out like the app's big
    quarter-width frames): one word at a time — 12 frames, 4 per row. The
    first 11 are the word's bits, the free 12th frame shows the word's number,
    and the word itself is written in a row above the grid. */
-.auth-binary,
-.auth-numeric {
+.auth-binary {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -2270,8 +2298,7 @@ html.user-profile-menu-open body {
   text-align: left;
 }
 
-.auth-binary[hidden],
-.auth-numeric[hidden] {
+.auth-binary[hidden] {
   display: none;
 }
 
@@ -2381,57 +2408,6 @@ html.user-profile-menu-open body {
 .auth-bit-next:active,
 .auth-bit-back:not(:disabled):active {
   transform: scale(0.97);
-}
-
-/* Numeric wizard: the typed number with its live word, above a phone-style
-   digit pad (1-9 in three rows, then 0 in the middle with delete beside). */
-.auth-num-display {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  min-height: 1.15em;
-  line-height: 1.15;
-  padding-left: 2px;
-  font-weight: 700;
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
-}
-
-.auth-num-value {
-  color: var(--text);
-}
-
-.auth-num-word {
-  color: var(--accent-light);
-}
-
-.auth-num-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-}
-
-.auth-num-key {
-  min-height: calc((var(--layout-ref) - 3rem) / 4 * 0.62);
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text);
-  font-family: var(--font);
-  font-weight: 700;
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.3);
-  line-height: 1;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.auth-num-key:active {
-  transform: scale(0.96);
-  border-color: rgba(74, 222, 128, 0.6);
-  background: rgba(74, 222, 128, 0.1);
-}
-
-.auth-num-delete {
-  color: var(--text-muted);
 }
 
 .auth-word-list {
@@ -4608,6 +4584,107 @@ html.user-profile-menu-open body {
   line-height: var(--ui-text-leading);
   margin-top: 0.45rem;
   color: var(--text);
+}
+
+/* PRO voice mode (Professional Voice Cloning sample collection): toggled
+   from the samples page, reuses the same recorder plus file uploads. */
+.user-profile-voice-mode-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  margin-bottom: 0.4rem;
+}
+
+.user-profile-voice-mode-btn {
+  padding: 0.35rem 0.9rem;
+  border: 1px solid rgba(42, 235, 108, 0.45);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--accent-light);
+  font: inherit;
+  font-size: calc(var(--ui-text-size) * 0.85);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.user-profile-voice-mode-btn.is-pro {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+
+.user-profile-samples-progress--pro .user-profile-duration-total--ready .user-profile-duration-total-value,
+.user-profile-duration-total--ready .user-profile-duration-total-value {
+  color: var(--accent-light);
+}
+
+.user-profile-pro-copy {
+  color: var(--text-muted, rgba(255, 255, 255, 0.72));
+}
+
+.user-profile-pro-submitted {
+  color: var(--accent-light);
+}
+
+.user-profile-pro-remaining {
+  color: #fff;
+  font-weight: 600;
+}
+
+.user-profile-pro-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  margin-top: 0.65rem;
+}
+
+.user-profile-pro-btn {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(var(--page-button-height) * 0.62);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgba(42, 235, 108, 0.45);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--accent-light);
+  font: inherit;
+  font-size: calc(var(--ui-text-size) * 0.85);
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.user-profile-pro-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.user-profile-pro-btn--submit:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #04140a;
+}
+
+.user-profile-pro-btn--danger {
+  flex: 0 0 auto;
+}
+
+.user-profile-pro-btn--danger .user-profile-record-again-icon {
+  width: calc(var(--page-symbol-size) * 0.6);
+  height: calc(var(--page-symbol-size) * 0.6);
+}
+
+.user-profile-pro-btn:not(:disabled):active {
+  transform: scale(0.97);
 }
 
 .user-profile-prompt-text {
