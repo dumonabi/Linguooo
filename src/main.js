@@ -30,7 +30,11 @@ const DEFAULT_LANG1 = 'en';
 const DEFAULT_LANG2 = 'es';
 
 const MAX_RECORDING_MS = 120_000;
-const RECORDING_TAIL_MS = 150;
+// Keep capturing briefly after the user taps send: people often tap while
+// the last word is still being spoken, and the phone's mic pipeline (echo
+// cancellation, noise suppression) delays audio by ~100-300ms. Too short a
+// tail clips the final word mid-phoneme and the transcriber drops it.
+const RECORDING_TAIL_MS = 600;
 const RECORDER_STOP_FLUSH_MS = 150;
 
 let authRequired = false;
