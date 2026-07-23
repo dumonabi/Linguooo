@@ -138,6 +138,52 @@
         <div class="translate-below-panel">
           <button
             type="button"
+            class="compose-improve-undo"
+            id="compose-improve-undo"
+            aria-label="Restore previous text"
+            title="Restore previous text"
+            hidden
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M9 14L4 9l5-5" />
+              <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="compose-improve-wand"
+            id="improve-simplify"
+            data-improve="simplify"
+            aria-label="Simplify text"
+            title="Simplify text"
+            hidden
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <!-- Wand plus text lines that get shorter: simplify -->
+              <path d="M3 21l9-9" />
+              <path d="M11 4.5h1M14.5 1v1M14.5 7V8M18 4.5h1" />
+              <path d="M13 13h8M13 16.5h5.5M13 20h3" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="compose-improve-wand"
+            id="improve-formal"
+            data-improve="formal"
+            aria-label="Make text formal"
+            title="Make text formal"
+            hidden
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <!-- Wand plus a necktie: formal -->
+              <path d="M3 21l9-9" />
+              <path d="M8 4.5h1M11.5 1v1M11.5 7V8M15 4.5h1" />
+              <path d="M18.5 10l2 2-2 2-2-2z" />
+              <path d="M18.5 14l1.4 5.2-1.4 1.8-1.4-1.8z" />
+            </svg>
+          </button>
+          <button
+            type="button"
             class="compose-translate-below"
             id="dictation-translate"
             aria-label="Translate"
@@ -174,7 +220,7 @@
 
         <div id="auth-panel-signin">
           <h2>Welcome back</h2>
-          <p class="auth-hint">Enter your 12-word recovery phrase. Type at least three letters of each word to see suggestions.</p>
+          <p class="auth-hint">Enter your recovery phrase as its 12 numbers — you can type them, use the keypad below, paste the short Base58 code, or enter the 12 words instead.</p>
           <form id="auth-signin-form">
             <div class="auth-passphrase-wrap">
               <textarea
@@ -184,7 +230,7 @@
                 spellcheck="false"
                 autocomplete="off"
                 autocapitalize="off"
-                placeholder="word word word …"
+                placeholder="12 numbers, code or words …"
                 required
               ></textarea>
               <div class="auth-input-tools">
@@ -203,26 +249,29 @@
                 <button
                   type="button"
                   class="auth-input-tool"
-                  id="auth-seed-binary-toggle"
-                  aria-label="Binary squares input"
-                  title="Binary squares input"
+                  id="auth-seed-numeric-toggle"
+                  aria-label="Number keypad input"
+                  title="Number keypad input"
                   aria-expanded="false"
                 >
                   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8z"/>
+                    <circle cx="6" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="18" cy="5" r="2"/>
+                    <circle cx="6" cy="11" r="2"/><circle cx="12" cy="11" r="2"/><circle cx="18" cy="11" r="2"/>
+                    <circle cx="6" cy="17" r="2"/><circle cx="12" cy="17" r="2"/><circle cx="18" cy="17" r="2"/>
+                    <circle cx="12" cy="22" r="2"/>
                   </svg>
                 </button>
               </div>
               <ul class="auth-word-list" id="auth-word-list" hidden role="listbox" aria-label="BIP39 words"></ul>
             </div>
-            <div class="auth-binary" id="auth-seed-binary" hidden></div>
+            <div class="auth-numeric" id="auth-seed-numeric" hidden></div>
             <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
           </form>
         </div>
 
         <div id="auth-panel-register" hidden>
           <h2>Create account</h2>
-          <p class="auth-hint">Enter the admin password first. We will generate a unique 12-word phrase — save it, it is the only way back in.</p>
+          <p class="auth-hint">Enter the admin password first. We will generate a unique 12-number phrase — save it, it is the only way back in.</p>
           <form id="auth-register-form">
             <input
               type="password"
@@ -238,10 +287,18 @@
 
         <div id="auth-recovery-reveal" hidden>
           <h2>Save your phrase</h2>
-          <p class="auth-hint">Write these 12 words down. We cannot show them again on a new device unless you saved them here.</p>
+          <p class="auth-hint">Write these 12 numbers down — or save the short Base58 code below them, both work. We cannot show them again on a new device unless you saved them here.</p>
           <div class="auth-mnemonic-block">
-            <p class="auth-mnemonic" id="auth-mnemonic-text"></p>
-            <button type="button" class="auth-copy-mnemonic" id="auth-copy-mnemonic" aria-label="Copy phrase" title="Copy phrase">
+            <p class="auth-mnemonic" id="auth-mnemonic-numbers"></p>
+            <button type="button" class="auth-copy-mnemonic" id="auth-copy-numbers" aria-label="Copy numbers" title="Copy numbers">
+              <svg class="auth-copy-mnemonic-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+            </button>
+          </div>
+          <div class="auth-mnemonic-block" id="auth-mnemonic-code-block">
+            <p class="auth-mnemonic" id="auth-mnemonic-code"></p>
+            <button type="button" class="auth-copy-mnemonic" id="auth-copy-code" aria-label="Copy code" title="Copy code">
               <svg class="auth-copy-mnemonic-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
               </svg>

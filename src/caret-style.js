@@ -40,14 +40,20 @@ export function measureCompactCharCell(mirror, style) {
   return { charWidth, lineHeight, fontSize };
 }
 
-export function positionBlockCaret(caret, { left, top, charWidth, lineHeight, markerHeight }) {
-  const blockHeight = Math.max(markerHeight ?? 0, lineHeight, 12);
-  const blockWidth = charWidth * 0.75;
+// The caret is a thin vertical line (WhatsApp-style) rather than a full
+// character block, so it never covers the letter it sits on.
+const CARET_LINE_WIDTH = 2;
+
+export function positionBlockCaret(caret, { left, top, lineHeight, markerHeight }) {
+  // Match the glyph box rather than the full line box: with roomy reading
+  // leading a line-box-tall caret pokes out of the textarea on the last line.
+  const glyphHeight = Math.max(markerHeight ?? 0, 12);
+  const caretHeight = lineHeight ? Math.min(glyphHeight, lineHeight) : glyphHeight;
 
   caret.style.left = `${left}px`;
   caret.style.top = `${top}px`;
-  caret.style.width = `${blockWidth}px`;
-  caret.style.height = `${blockHeight}px`;
+  caret.style.width = `${CARET_LINE_WIDTH}px`;
+  caret.style.height = `${caretHeight}px`;
 }
 
 export function positionCompactCaret(caret, {
@@ -55,21 +61,19 @@ export function positionCompactCaret(caret, {
   fieldTop,
   inputTop,
   inputHeight,
-  charWidth,
   lineHeight,
   fontSize,
 }) {
-  const blockHeight = Math.min(
+  const caretHeight = Math.min(
     Math.max(lineHeight, fontSize * 1.05, 10),
     inputHeight * 0.92,
   );
-  const blockWidth = Math.max(charWidth * 0.92, fontSize * 0.14, 3);
-  const top = inputTop - fieldTop + (inputHeight - blockHeight) / 2;
+  const top = inputTop - fieldTop + (inputHeight - caretHeight) / 2;
 
   caret.style.left = `${left}px`;
   caret.style.top = `${top}px`;
-  caret.style.width = `${blockWidth}px`;
-  caret.style.height = `${blockHeight}px`;
+  caret.style.width = `${CARET_LINE_WIDTH}px`;
+  caret.style.height = `${caretHeight}px`;
 }
 
 export function createTypingCaret(caretEl) {

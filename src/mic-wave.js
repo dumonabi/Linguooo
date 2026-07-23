@@ -186,17 +186,9 @@ export function createMicWave() {
     clearMicVoicePulse();
   }
 
-  function prepareMicMeter(stream) {
-    if (micMeter?.stream === stream) {
-      const ctx = getMicMeterContext();
-      if (ctx?.state === 'suspended') void ctx.resume();
-      return;
-    }
-
-    teardownMicMeter();
-
+  function buildMeterGraph(stream) {
     const ctx = getMicMeterContext();
-    if (!ctx || !stream?.active) return;
+    if (!ctx || !stream?.active) return false;
 
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
@@ -218,10 +210,51 @@ export function createMicWave() {
       freqData: new Uint8Array(analyser.frequencyBinCount),
       smooth: 0,
     };
+    return true;
+  }
 
-    if (ctx.state !== 'running') {
-      void ctx.resume().catch(() => {});
+  // On iOS the context often gets stuck in "suspended" while the first-use
+  // permission prompt is on screen, and a single resume() afterwards can be
+  // silently ignored — the bars then never move even though recording works.
+  // Keep retrying for a couple of seconds and, as a last resort, rebuild the
+  // graph on a fresh context: creating one while capture is live starts it
+  // in the running state.
+  async function ensureMeterContextRunning(stream, { rebuild = true } = {}) {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const ctx = micMeterCtx;
+      if (!ctx || micMeter?.stream !== stream) return;
+      if (ctx.state === 'running') return;
+      try {
+        await ctx.resume();
+      } catch {
+        // keep retrying
+      }
+      if (ctx.state === 'running') return;
+      await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
     }
+
+    if (!rebuild || micMeter?.stream !== stream || !stream?.active) return;
+    try {
+      void micMeterCtx?.close();
+    } catch {
+      // ignore close errors
+    }
+    micMeterCtx = null;
+    teardownMicMeter();
+    if (buildMeterGraph(stream)) {
+      void ensureMeterContextRunning(stream, { rebuild: false });
+    }
+  }
+
+  function prepareMicMeter(stream) {
+    if (micMeter?.stream === stream) {
+      void ensureMeterContextRunning(stream);
+      return;
+    }
+
+    teardownMicMeter();
+    if (!buildMeterGraph(stream)) return;
+    void ensureMeterContextRunning(stream);
   }
 
   function applyMicVoicePulse(levelEl, toolbarEl) {

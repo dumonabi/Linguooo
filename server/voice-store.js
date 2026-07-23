@@ -73,6 +73,8 @@ function emptyProfile() {
     // PVC voice created and fed with samples but not yet verified/trained.
     // Promoted to proVoiceId once training finishes.
     pvcPendingVoiceId: null,
+    // Owner passed the in-app captcha verification; training may be running.
+    pvcVerified: false,
     samples: [],
     // Long-form samples collected for PVC training (30 min – 3 h total).
     proSamples: [],
@@ -306,6 +308,15 @@ export async function savePvcPendingVoice(userId, slotNumber, pvcVoiceId) {
   const slot = validateProfileSlot(slotNumber);
   const profile = await getVoiceProfile(userId, slot);
   profile.pvcPendingVoiceId = pvcVoiceId || null;
+  profile.pvcVerified = false;
+  await writeMeta(userId, slot, profile);
+  return profile;
+}
+
+export async function savePvcVerified(userId, slotNumber) {
+  const slot = validateProfileSlot(slotNumber);
+  const profile = await getVoiceProfile(userId, slot);
+  profile.pvcVerified = true;
   await writeMeta(userId, slot, profile);
   return profile;
 }
@@ -407,5 +418,6 @@ export function voiceProfileSummary(voiceProfile) {
     proMinTotalMs: PRO_MIN_TOTAL_MS,
     proMaxTotalMs: PRO_MAX_TOTAL_MS,
     pvcSubmitted: Boolean(voiceProfile.pvcPendingVoiceId),
+    pvcVerified: Boolean(voiceProfile.pvcVerified),
   };
 }

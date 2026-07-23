@@ -1,4 +1,5 @@
 import { apiFetch, clearAuthSession, fetchCurrentUser, getAuthToken, getRecoveryPhrase, getStoredUser, setStoredUser } from './auth.js';
+import { phraseToBase58, phraseToNumbers } from './seed-input-extras.js';
 import { createLangPicker, createCollapsibleNumberedSquareGrid, hideAllLangPickerCarets } from './lang-picker.js';
 import {
   addProfileSlot,
@@ -24,8 +25,8 @@ import {
   scheduleProfileSettingsSync,
 } from './profile-sync.js';
 import {
-  getProVoicePrompt,
-  getVoicePrompt,
+  getProVoicePrompts,
+  getVoicePrompts,
   getVoiceUi,
   resolveVoiceLanguage,
   VOICE_ADVISABLE_CLIP_SEC,
@@ -396,6 +397,18 @@ let voiceSamplesPageOpen = false;
 // Professional Voice Cloning (PVC) sample collection mode on the samples page.
 let proSamplesMode = false;
 let submittingProVoice = false;
+// Reading prompts for languages without a hand-written set, translated by the
+// server on demand: lang -> { prompts, proPrompts }.
+const remoteVoicePrompts = new Map();
+const remoteVoicePromptsPending = new Set();
+// In-app PVC ownership verification: the captcha image (base64 PNG with the
+// lines to read aloud), and whether the recording is being submitted.
+let proCaptchaImage = '';
+let loadingProCaptcha = false;
+let verifyingProVoice = false;
+// Training progress polling while the samples page is open.
+let proTrainingStatus = null;
+let proStatusTimer = null;
 
 const MIN_SAMPLES = VOICE_SAMPLE_TARGET;
 const MIN_VOICE_CLIP_MS = VOICE_MIN_CLIP_SEC * 1000;
@@ -750,7 +763,102 @@ function getProfileState(user) {
     proMinTotalMs: voiceProfile?.proMinTotalMs ?? 30 * 60_000,
     proMaxTotalMs: voiceProfile?.proMaxTotalMs ?? 3 * 3_600_000,
     pvcSubmitted: Boolean(voiceProfile?.pvcSubmitted),
+    pvcVerified: Boolean(voiceProfile?.pvcVerified),
+    proVoiceReady: Boolean(voiceProfile?.proVoiceReady),
   };
+}
+
+// ---- Message text size (A− / A+) ----
+// Scales only the conversation text via --message-text-scale; the rest of
+// the layout keeps its density-based size. Stored per device.
+const MESSAGE_TEXT_SCALE_KEY = 'lingo-message-text-scale';
+const MESSAGE_TEXT_SCALE_MIN = 0.8;
+const MESSAGE_TEXT_SCALE_MAX = 1.4;
+const MESSAGE_TEXT_SCALE_STEP = 0.1;
+
+function readMessageTextScale() {
+  const raw = Number(readProfileValue(MESSAGE_TEXT_SCALE_KEY));
+  if (!Number.isFinite(raw)) return 1;
+  return Math.min(MESSAGE_TEXT_SCALE_MAX, Math.max(MESSAGE_TEXT_SCALE_MIN, raw));
+}
+
+export function applyMessageTextScale() {
+  document.documentElement.style.setProperty('--message-text-scale', String(readMessageTextScale()));
+}
+
+function adjustMessageTextScale(delta) {
+  const next = Math.round((readMessageTextScale() + delta) * 10) / 10;
+  const clamped = Math.min(MESSAGE_TEXT_SCALE_MAX, Math.max(MESSAGE_TEXT_SCALE_MIN, next));
+  writeProfileValue(MESSAGE_TEXT_SCALE_KEY, String(clamped));
+  applyMessageTextScale();
+  toast(`${Math.round(clamped * 100)}%`);
+}
+
+// The recovery backup shown to users: the 12 numbers plus the compact
+// Base58 code on a second line. Falls back to the raw value for session
+// tokens that are not word phrases.
+function formatRecoveryBackup(phrase) {
+  const numbers = phraseToNumbers(phrase);
+  if (!numbers) return phrase;
+  const code = phraseToBase58(phrase);
+  return code ? `${numbers}\n${code}` : numbers;
+}
+
+// The PVC pipeline step the pro samples page is currently in.
+function proVoiceStep(state) {
+  if (state.proVoiceReady) return 'ready';
+  if (state.pvcSubmitted && state.pvcVerified) return 'training';
+  if (state.pvcSubmitted) return 'verify';
+  return 'collect';
+}
+
+// ---- Reading prompts in any language ----
+// Spanish, Thai and English ship hand-written; any other language is fetched
+// from the server, which translates the texts once and caches them.
+
+async function fetchRemoteVoicePrompts(lang) {
+  if (remoteVoicePrompts.has(lang) || remoteVoicePromptsPending.has(lang)) return;
+  remoteVoicePromptsPending.add(lang);
+  try {
+    const res = await apiFetch(`/api/voice/prompts?lang=${encodeURIComponent(lang)}`);
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && Array.isArray(data.prompts) && data.prompts.length) {
+      remoteVoicePrompts.set(lang, {
+        prompts: data.prompts,
+        proPrompts: Array.isArray(data.proPrompts) ? data.proPrompts : [],
+      });
+    } else {
+      // Remember the failure so re-renders don't refetch in a loop; the
+      // resolver falls back to the English texts.
+      remoteVoicePrompts.set(lang, { failed: true });
+      toast(data.error || getVoiceUi(voiceLang).promptsLoadFailed);
+    }
+  } catch {
+    remoteVoicePrompts.set(lang, { failed: true });
+    toast(getVoiceUi(voiceLang).promptsLoadFailed);
+  } finally {
+    remoteVoicePromptsPending.delete(lang);
+    await renderActiveProfileUi();
+  }
+}
+
+// Returns the prompt to read, or null while the translated set is still
+// being prepared (a fetch is kicked off in that case).
+function resolveVoicePrompt(code, index, { pro = false } = {}) {
+  const lang = resolveVoiceLanguage(code);
+  const local = pro ? getProVoicePrompts(lang) : getVoicePrompts(lang);
+  if (local?.length) return local[index % local.length];
+
+  const remote = remoteVoicePrompts.get(lang);
+  if (remote?.failed) {
+    const fallback = pro ? getProVoicePrompts('en') : getVoicePrompts('en');
+    return fallback[index % fallback.length];
+  }
+  const list = pro ? remote?.proPrompts : remote?.prompts;
+  if (list?.length) return list[index % list.length];
+
+  void fetchRemoteVoicePrompts(lang);
+  return null;
 }
 
 function discardActiveRecording() {
@@ -1000,6 +1108,120 @@ function bindProVoiceControls(root) {
   $('#user-voice-pro-reset-btn', root)?.addEventListener('click', () => void resetProSamples());
 }
 
+// ---- In-app PVC verification and training ----
+// After the samples are submitted, ElevenLabs requires proof that the voice
+// belongs to the user: a captcha image with a few lines of text that must be
+// read aloud. Both the captcha and the training that follows run entirely
+// inside the app, so any user can complete their PRO voice here.
+
+async function ensureProCaptcha() {
+  if (proCaptchaImage || loadingProCaptcha) return;
+  loadingProCaptcha = true;
+  try {
+    const res = await apiFetch(voiceApiPath('/api/voice/pro-captcha', getCurrentProfileSlot()));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.image) {
+      toast(data.error || getVoiceUi(voiceLang).proVerifyFailed);
+      return;
+    }
+    proCaptchaImage = data.image;
+  } catch {
+    toast(getVoiceUi(voiceLang).proVerifyFailed);
+  } finally {
+    loadingProCaptcha = false;
+    await renderActiveProfileUi();
+  }
+}
+
+function buildProVerifyMarkup(ui, { isRecording }) {
+  const captcha = proCaptchaImage
+    ? `<img class="user-profile-pro-captcha" src="data:image/png;base64,${proCaptchaImage}" alt="${escapeHtml(ui.proVerifyTitle)}" />`
+    : `<p class="user-profile-note">${escapeHtml(ui.proVerifyLoading)}</p>`;
+
+  return `
+    <p class="user-profile-note user-profile-pro-copy">${escapeHtml(ui.proVerifyCopy)}</p>
+    ${captcha}
+    <div class="user-profile-actions${isRecording ? ' user-profile-actions--recording' : ''}">
+      ${verifyingProVoice ? `
+      <p class="user-profile-note user-profile-saving-note">${escapeHtml(ui.proVerifySubmitting)}</p>
+      ` : isRecording ? `
+      <p class="user-profile-recording-timer-wrap" aria-live="polite">
+        <span class="user-profile-recording-timer" id="user-voice-recording-timer">0:00</span>
+      </p>
+      <div class="compose-toolbar user-profile-recording-toolbar">
+        <div class="compose-toolbar-left">
+          <button type="button" class="compose-recording-cancel" id="user-voice-cancel-btn"
+            title="${escapeHtml(ui.cancelRecording)}" aria-label="${escapeHtml(ui.cancelRecording)}">
+            ${PROFILE_RECORDING_CANCEL_SVG}
+          </button>
+        </div>
+        <div class="compose-toolbar-center">
+          <div class="compose-level" id="user-voice-level" aria-hidden="true"></div>
+        </div>
+        <div class="compose-toolbar-right">
+          <button type="button" class="compose-recording-send user-profile-recording-accept" id="user-voice-stop-btn"
+            title="${escapeHtml(ui.stopSample)}" aria-label="${escapeHtml(ui.stopSample)}">
+            ${PROFILE_RECORDING_ACCEPT_SVG}
+          </button>
+        </div>
+      </div>
+      ` : proCaptchaImage ? `
+      <div class="user-profile-mic-action">
+        <div class="user-profile-mic-slot lang-bar-rect-slot">
+          <button type="button" class="user-profile-record-mic user-profile-record-mic--boxed" id="user-voice-record-btn"
+            title="${escapeHtml(ui.proVerifyRecord)}" aria-label="${escapeHtml(ui.proVerifyRecord)}">
+            ${PROFILE_RECORDING_MIC_SVG}
+          </button>
+        </div>
+      </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function buildProTrainingMarkup(ui) {
+  const progress = Math.round(Math.max(0, Math.min(1, proTrainingStatus?.progress ?? 0)) * 100);
+  return `
+    <p class="user-profile-note user-profile-pro-submitted">${escapeHtml(ui.proTrainingNote)}</p>
+    <div class="user-profile-pro-training">
+      <div class="user-profile-pro-training-bar"><div class="user-profile-pro-training-fill" style="width: ${progress}%"></div></div>
+      <p class="user-profile-note user-profile-pro-training-pct">${progress}%</p>
+    </div>
+  `;
+}
+
+function stopProStatusPolling() {
+  if (proStatusTimer) window.clearInterval(proStatusTimer);
+  proStatusTimer = null;
+}
+
+function startProStatusPolling() {
+  if (proStatusTimer) return;
+  const tick = async () => {
+    if (!voiceSamplesPageOpen || !proSamplesMode) {
+      stopProStatusPolling();
+      return;
+    }
+    try {
+      const slot = getCurrentProfileSlot();
+      const res = await apiFetch(voiceApiPath('/api/voice/pro-status', slot));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      proTrainingStatus = data;
+      if (data.state === 'ready') {
+        stopProStatusPolling();
+        toast(getVoiceUi(voiceLang).proReadyNote);
+        await refreshVoiceProfile(slot);
+      }
+      await renderActiveProfileUi();
+    } catch {
+      // transient network error — next tick retries
+    }
+  };
+  void tick();
+  proStatusTimer = window.setInterval(() => void tick(), 45_000);
+}
+
 async function renderVoiceSamplesPage() {
   const user = getStoredUser();
   const page = $('#user-profile-voice-samples-page', rootEl);
@@ -1015,32 +1237,59 @@ async function renderVoiceSamplesPage() {
   const progressSlot = $('#user-profile-voice-samples-progress', page);
 
   if (proSamplesMode) {
-    const busy = submittingProVoice;
-    const prompt = getProVoicePrompt(voiceLang, state.proSampleCount);
-    const atMax = state.proTotalDurationMs >= state.proMaxTotalMs;
-    const showRecord = !isRecording && !savingSample && !busy && !atMax;
-    if (progressSlot) {
-      progressSlot.innerHTML = buildProSamplesProgressMarkup(ui, state);
+    const step = proVoiceStep(state);
+
+    if (step === 'ready') {
+      stopProStatusPolling();
+      if (progressSlot) progressSlot.innerHTML = '';
+      main.innerHTML = `
+        ${buildProModeToggleMarkup(ui, false)}
+        <p class="user-profile-note user-profile-pro-submitted">${escapeHtml(ui.proReadyNote)}</p>
+      `;
+    } else if (step === 'training') {
+      if (progressSlot) progressSlot.innerHTML = '';
+      main.innerHTML = `
+        ${buildProModeToggleMarkup(ui, false)}
+        ${buildProTrainingMarkup(ui)}
+      `;
+      startProStatusPolling();
+    } else if (step === 'verify') {
+      if (progressSlot) progressSlot.innerHTML = '';
+      main.innerHTML = `
+        ${buildProModeToggleMarkup(ui, isRecording || verifyingProVoice)}
+        ${buildProVerifyMarkup(ui, { isRecording })}
+      `;
+      bindVoiceRecordingControls(page);
+      void ensureProCaptcha();
+    } else {
+      const busy = submittingProVoice;
+      const prompt = resolveVoicePrompt(voiceLang, state.proSampleCount, { pro: true });
+      const atMax = state.proTotalDurationMs >= state.proMaxTotalMs;
+      const showRecord = Boolean(prompt) && !isRecording && !savingSample && !busy && !atMax;
+      if (progressSlot) {
+        progressSlot.innerHTML = buildProSamplesProgressMarkup(ui, state);
+      }
+      main.innerHTML = `
+        ${buildProModeToggleMarkup(ui, isRecording || savingSample)}
+        ${prompt ? '' : `<p class="user-profile-note">${escapeHtml(ui.promptsLoading)}</p>`}
+        ${buildVoiceRecordingMarkup({
+          ui,
+          prompt: prompt || '',
+          isRecording,
+          recordingAtLimit: false,
+          showRecord,
+          savingSample,
+          showRecordAgain: false,
+        })}
+        ${!isRecording && !savingSample ? buildProVoiceExtrasMarkup(ui, state) : ''}
+      `;
+      bindVoiceRecordingControls(page);
+      bindProVoiceControls(page);
     }
-    main.innerHTML = `
-      ${buildProModeToggleMarkup(ui, isRecording || savingSample)}
-      ${buildVoiceRecordingMarkup({
-        ui,
-        prompt,
-        isRecording,
-        recordingAtLimit: false,
-        showRecord,
-        savingSample,
-        showRecordAgain: false,
-      })}
-      ${!isRecording && !savingSample ? buildProVoiceExtrasMarkup(ui, state) : ''}
-    `;
-    bindVoiceRecordingControls(page);
-    bindProVoiceControls(page);
   } else {
-    const prompt = getVoicePrompt(voiceLang, nextPromptIndex(sampleCount, maxSamples));
+    const prompt = resolveVoicePrompt(voiceLang, nextPromptIndex(sampleCount, maxSamples));
     const recordingAtLimit = isRecording && !canRecordMore;
-    const showRecord = canRecordMore && !isRecording && !creatingVoice && !savingSample;
+    const showRecord = Boolean(prompt) && canRecordMore && !isRecording && !creatingVoice && !savingSample;
     const showRecordAgain = sampleCount >= maxSamples && !isRecording && !creatingVoice && !savingSample;
     const savedCount = Math.min(sampleCount, maxSamples);
     const savedDurationMs = getSavedVoiceDurationMs();
@@ -1049,9 +1298,10 @@ async function renderVoiceSamplesPage() {
     }
     main.innerHTML = `
       ${buildProModeToggleMarkup(ui, isRecording || savingSample)}
+      ${prompt || sampleCount >= maxSamples ? '' : `<p class="user-profile-note">${escapeHtml(ui.promptsLoading)}</p>`}
       ${buildVoiceRecordingMarkup({
         ui,
-        prompt,
+        prompt: prompt || '',
         isRecording,
         recordingAtLimit,
         showRecord,
@@ -1184,6 +1434,20 @@ async function renderMenuContent() {
               title="${escapeHtml(ui.showRecoveryPhrase)}"
               aria-label="${escapeHtml(ui.showRecoveryPhrase)}"
             >${PROFILE_SHOW_SEED_ICON_SVG}</button>
+            <button
+              type="button"
+              class="user-profile-session-icon-btn user-profile-text-scale-btn"
+              id="user-profile-text-smaller"
+              title="${escapeHtml(ui.textSmaller)}"
+              aria-label="${escapeHtml(ui.textSmaller)}"
+            >A−</button>
+            <button
+              type="button"
+              class="user-profile-session-icon-btn user-profile-text-scale-btn"
+              id="user-profile-text-larger"
+              title="${escapeHtml(ui.textLarger)}"
+              aria-label="${escapeHtml(ui.textLarger)}"
+            >A+</button>
           </div>
           <span class="user-profile-session-spacer" aria-hidden="true"></span>
           <div class="user-profile-session-end">
@@ -1244,6 +1508,8 @@ async function renderMenuContent() {
   $('#user-profile-samples-btn', panel)?.addEventListener('click', () => setVoiceSamplesPageOpen(true));
   $('#user-profile-signout', panel)?.addEventListener('click', () => signOut());
   $('#user-profile-create-account', panel)?.addEventListener('click', () => void createAdminAccount(panel));
+  $('#user-profile-text-smaller', panel)?.addEventListener('click', () => adjustMessageTextScale(-MESSAGE_TEXT_SCALE_STEP));
+  $('#user-profile-text-larger', panel)?.addEventListener('click', () => adjustMessageTextScale(MESSAGE_TEXT_SCALE_STEP));
 
   const sessionRow = $('#user-profile-session-row', panel);
   const sessionToggle = $('#user-profile-session-toggle', panel);
@@ -1304,7 +1570,10 @@ async function renderMenuContent() {
       recoveryText.textContent = uiStrings.recoveryPhraseMissing;
       if (recoveryCopyBtn) recoveryCopyBtn.hidden = true;
     } else {
-      recoveryText.textContent = phrase;
+      // Recovery phrases are always displayed as numbers plus their Base58
+      // code; if the stored value is a session token rather than a word
+      // phrase, show it unchanged.
+      recoveryText.textContent = formatRecoveryBackup(phrase);
       if (recoveryCopyBtn) {
         recoveryCopyBtn.hidden = false;
         recoveryCopyBtn.title = uiStrings.copyPhrase;
@@ -1365,7 +1634,7 @@ async function createAdminAccount(panel) {
     if (recoveryText) recoveryText.textContent = '';
     if (recoveryCopyBtn) recoveryCopyBtn.hidden = true;
     if (data.recoveryPhrase && adminSeed) {
-      adminSeed.textContent = data.recoveryPhrase;
+      adminSeed.textContent = formatRecoveryBackup(data.recoveryPhrase);
       if (adminSeedWrap) adminSeedWrap.hidden = false;
       if (adminSeedCopyBtn) {
         adminSeedCopyBtn.hidden = false;
@@ -1556,6 +1825,9 @@ async function stopVoiceSampleRecording() {
   const slot = getCurrentProfileSlot();
   if (user?.id && slot) saveProfileUserMenuSelection(user.id, slot);
   const state = getProfileState(user);
+  // The same record/stop controls serve the ownership-verification step: the
+  // recording is the user reading the captcha, not another training sample.
+  const isVerifyStep = proSamplesMode && proVoiceStep(state) === 'verify';
   if (!proSamplesMode && !state.canRecordMore) {
     cancelVoiceSampleRecording();
     toast(`You already have ${state.maxSamples} samples`);
@@ -1563,6 +1835,7 @@ async function stopVoiceSampleRecording() {
   }
 
   savingSample = true;
+  if (isVerifyStep) verifyingProVoice = true;
   await renderActiveProfileUi();
 
   try {
@@ -1587,19 +1860,29 @@ async function stopVoiceSampleRecording() {
     form.append('durationMs', String(durationMs));
     form.append('slot', String(slot));
 
-    const endpoint = proSamplesMode ? '/api/voice/pro-samples' : '/api/voice/samples';
+    const ui = getVoiceUi(voiceLang);
+    const endpoint = isVerifyStep
+      ? '/api/voice/pro-captcha'
+      : proSamplesMode ? '/api/voice/pro-samples' : '/api/voice/samples';
     const res = await apiFetch(voiceApiPath(endpoint, slot), {
       method: 'POST',
       body: form,
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      toast(data.error || 'Could not save voice sample');
+      toast(data.error || (isVerifyStep ? ui.proVerifyFailed : 'Could not save voice sample'));
       await renderActiveProfileUi();
       return;
     }
 
-    toast(proSamplesMode ? getVoiceUi(voiceLang).proSampleSaved : 'Voice sample saved');
+    if (isVerifyStep) {
+      // Verified: ElevenLabs starts training server-side right away.
+      proCaptchaImage = '';
+      proTrainingStatus = null;
+      toast(ui.proVerifiedNote);
+    } else {
+      toast(proSamplesMode ? ui.proSampleSaved : 'Voice sample saved');
+    }
     await refreshVoiceProfile(slot);
 
     if (!proSamplesMode && data.readyForClone && voiceProfile?.elevenlabsConfigured !== false && !getStoredUser()?.voiceReady) {
@@ -1610,6 +1893,7 @@ async function stopVoiceSampleRecording() {
     await renderActiveProfileUi();
   } finally {
     savingSample = false;
+    verifyingProVoice = false;
     if (recordingSession) discardActiveRecording();
     else teardownProfileRecordingWave();
     try {
@@ -1791,6 +2075,7 @@ export function initUserProfile(slotEl, { onChange, showToast } = {}) {
   if (!slotEl) return;
   onUserChange = onChange;
   showToastFn = showToast || (() => {});
+  applyMessageTextScale();
   rootEl = document.createElement('div');
   rootEl.className = 'user-profile';
   rootEl.innerHTML = `

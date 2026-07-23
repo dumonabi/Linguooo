@@ -54,13 +54,26 @@ const VOICE_UI = {
     proVoiceCopy: 'Lee los textos en voz alta con naturalidad y expresión, como si hablaras con alguien, hasta reunir 30 minutos. Máximo 3 horas.',
     proSubmit: 'Crear voz PRO',
     proSubmitting: 'Enviando muestras…',
-    proSubmittedNote: 'Muestras enviadas a ElevenLabs. Completa la verificación y el entrenamiento en el panel de ElevenLabs; la voz PRO se activará sola al terminar.',
+    proSubmittedNote: 'Muestras enviadas. Ahora verifica que la voz es tuya leyendo el texto de la imagen.',
     proRemaining: 'Faltan {min} min de audio',
     proReady: 'Listo para crear tu voz PRO',
     proResetConfirm: '¿Eliminar todas las muestras PRO?',
     proSampleSaved: 'Muestra PRO guardada',
     proSubmitFailed: 'No se pudo crear la voz PRO',
     proDeleteAll: 'Eliminar muestras PRO',
+    proVerifyTitle: 'Texto de verificación',
+    proVerifyCopy: 'Verifica que la voz es tuya: pulsa el micrófono y lee en voz alta las líneas de la imagen.',
+    proVerifyLoading: 'Cargando el texto de verificación…',
+    proVerifyRecord: 'Grabar verificación',
+    proVerifySubmitting: 'Verificando tu voz…',
+    proVerifyFailed: 'La verificación falló — vuelve a leer el texto e inténtalo de nuevo',
+    proVerifiedNote: 'Voz verificada. El entrenamiento ha comenzado.',
+    proTrainingNote: 'ElevenLabs está entrenando tu voz PRO. Suele tardar unas horas; puedes cerrar esta página.',
+    proReadyNote: 'Tu voz PRO está lista — usa el botón PRO en cualquier traducción.',
+    promptsLoading: 'Preparando los textos de lectura en tu idioma…',
+    promptsLoadFailed: 'No se pudieron preparar los textos en este idioma — inténtalo de nuevo',
+    textSmaller: 'Texto más pequeño',
+    textLarger: 'Texto más grande',
   },
   th: {
     profileName: 'ชื่อ',
@@ -112,13 +125,26 @@ const VOICE_UI = {
     proVoiceCopy: 'อ่านข้อความออกเสียงอย่างเป็นธรรมชาติและมีอารมณ์ เหมือนคุยกับใครสักคน จนครบ 30 นาที สูงสุด 3 ชั่วโมง',
     proSubmit: 'สร้างเสียง PRO',
     proSubmitting: 'กำลังส่งตัวอย่าง…',
-    proSubmittedNote: 'ส่งตัวอย่างไปยัง ElevenLabs แล้ว ทำการยืนยันและเทรนในแดชบอร์ด ElevenLabs เสียง PRO จะเปิดใช้เองเมื่อเสร็จ',
+    proSubmittedNote: 'ส่งตัวอย่างแล้ว ตอนนี้ยืนยันว่าเป็นเสียงของคุณโดยอ่านข้อความในภาพ',
     proRemaining: 'ต้องการอีก {min} นาที',
     proReady: 'พร้อมสร้างเสียง PRO แล้ว',
     proResetConfirm: 'ลบตัวอย่าง PRO ทั้งหมด?',
     proSampleSaved: 'บันทึกตัวอย่าง PRO แล้ว',
     proSubmitFailed: 'สร้างเสียง PRO ไม่สำเร็จ',
     proDeleteAll: 'ลบตัวอย่าง PRO',
+    proVerifyTitle: 'ข้อความยืนยันตัวตน',
+    proVerifyCopy: 'ยืนยันว่าเป็นเสียงของคุณ: กดไมโครโฟนแล้วอ่านข้อความในภาพออกเสียง',
+    proVerifyLoading: 'กำลังโหลดข้อความยืนยัน…',
+    proVerifyRecord: 'บันทึกเสียงยืนยัน',
+    proVerifySubmitting: 'กำลังยืนยันเสียงของคุณ…',
+    proVerifyFailed: 'ยืนยันไม่สำเร็จ — อ่านข้อความอีกครั้งแล้วลองใหม่',
+    proVerifiedNote: 'ยืนยันเสียงแล้ว เริ่มเทรนเสียงแล้ว',
+    proTrainingNote: 'ElevenLabs กำลังเทรนเสียง PRO ของคุณ ใช้เวลาหลายชั่วโมง ปิดหน้านี้ได้',
+    proReadyNote: 'เสียง PRO พร้อมแล้ว — ใช้ปุ่ม PRO ในคำแปลได้เลย',
+    promptsLoading: 'กำลังเตรียมข้อความอ่านในภาษาของคุณ…',
+    promptsLoadFailed: 'เตรียมข้อความในภาษานี้ไม่สำเร็จ — ลองอีกครั้ง',
+    textSmaller: 'ตัวอักษรเล็กลง',
+    textLarger: 'ตัวอักษรใหญ่ขึ้น',
   },
   en: {
     profileName: 'Name',
@@ -170,13 +196,26 @@ const VOICE_UI = {
     proVoiceCopy: 'Read the texts aloud naturally and expressively, as if talking to someone, until you reach 30 minutes. Up to 3 hours.',
     proSubmit: 'Create PRO voice',
     proSubmitting: 'Sending samples…',
-    proSubmittedNote: 'Samples sent to ElevenLabs. Finish verification and training in the ElevenLabs dashboard; the PRO voice will link automatically when done.',
+    proSubmittedNote: 'Samples sent. Now verify the voice is yours by reading the text in the image.',
     proRemaining: '{min} more minutes of audio to go',
     proReady: 'Ready to create your PRO voice',
     proResetConfirm: 'Delete all PRO samples?',
     proSampleSaved: 'PRO sample saved',
     proSubmitFailed: 'Could not create PRO voice',
     proDeleteAll: 'Delete PRO samples',
+    proVerifyTitle: 'Verification text',
+    proVerifyCopy: 'Verify the voice is yours: press the mic and read the lines in the image out loud.',
+    proVerifyLoading: 'Loading the verification text…',
+    proVerifyRecord: 'Record verification',
+    proVerifySubmitting: 'Verifying your voice…',
+    proVerifyFailed: 'Verification failed — read the text again and retry',
+    proVerifiedNote: 'Voice verified. Training has started.',
+    proTrainingNote: 'ElevenLabs is training your PRO voice. This usually takes a few hours; you can close this page.',
+    proReadyNote: 'Your PRO voice is ready — use the PRO button on any translation.',
+    promptsLoading: 'Preparing the reading texts in your language…',
+    promptsLoadFailed: 'Could not prepare the texts in this language — try again',
+    textSmaller: 'Smaller text',
+    textLarger: 'Larger text',
   },
 };
 
@@ -207,24 +246,28 @@ const VOICE_PROMPTS = {
   ],
 };
 
+// Any valid language code is kept as-is: reading prompts for languages
+// without a hand-written set are fetched translated from the server. Only
+// the UI chrome falls back to English (see getVoiceUi).
 export function resolveVoiceLanguage(code) {
   const lang = String(code || 'en').toLowerCase().trim();
-  if (VOICE_PROMPTS[lang]) return lang;
+  if (/^[a-z]{2,5}$/.test(lang)) return lang;
   return 'en';
 }
 
 export function getVoiceUi(code) {
   const lang = resolveVoiceLanguage(code);
-  return VOICE_UI[lang];
+  return VOICE_UI[lang] || VOICE_UI.en;
 }
 
+// Returns the hand-written prompt set, or null when the language relies on
+// server-translated prompts.
 export function getVoicePrompts(code) {
-  const lang = resolveVoiceLanguage(code);
-  return VOICE_PROMPTS[lang];
+  return VOICE_PROMPTS[resolveVoiceLanguage(code)] || null;
 }
 
 export function getVoicePrompt(code, sampleCount) {
-  const prompts = getVoicePrompts(code);
+  const prompts = getVoicePrompts(code) || VOICE_PROMPTS.en;
   return prompts[sampleCount % prompts.length];
 }
 
@@ -290,12 +333,13 @@ const PRO_VOICE_PROMPTS = {
   ],
 };
 
+// Returns the hand-written PRO prompt set, or null when the language relies
+// on server-translated prompts.
 export function getProVoicePrompts(code) {
-  const lang = resolveVoiceLanguage(code);
-  return PRO_VOICE_PROMPTS[lang];
+  return PRO_VOICE_PROMPTS[resolveVoiceLanguage(code)] || null;
 }
 
 export function getProVoicePrompt(code, sampleCount) {
-  const prompts = getProVoicePrompts(code);
+  const prompts = getProVoicePrompts(code) || PRO_VOICE_PROMPTS.en;
   return prompts[sampleCount % prompts.length];
 }

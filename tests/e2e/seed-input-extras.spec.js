@@ -41,79 +41,133 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('#auth-gate')).toBeVisible();
 });
 
-test('binary grid wizard builds the phrase word by word', async ({ page }) => {
+test('numeric keypad wizard builds the phrase word by word', async ({ page }) => {
   const input = page.locator('#auth-passphrase-input');
-  const binary = page.locator('#auth-seed-binary');
-  const next = binary.locator('[data-action="next"]');
-  const preview = binary.locator('.auth-bit-preview');
-  const filler = binary.locator('.auth-bit-filler');
+  const numeric = page.locator('#auth-seed-numeric');
+  const next = numeric.locator('[data-action="next"]');
+  const display = numeric.locator('.auth-num-display');
+  const key = (digit) => numeric.locator(`[data-digit="${digit}"]`);
 
-  // "abandon ×11 + about" is a valid mnemonic: words 1–11 all zeros (index 0),
-  // word 12 = index 3 ("about") = last two squares filled.
-  await page.locator('#auth-seed-binary-toggle').click();
-  await expect(binary).toBeVisible();
+  // "abandon ×11 + about" is a valid mnemonic: words 1-11 are number 0,
+  // word 12 is number 3 ("about").
+  await page.locator('#auth-seed-numeric-toggle').click();
+  await expect(numeric).toBeVisible();
   await expect(next).toHaveText('1 of 12 ›');
 
-  // An untouched word shows no preview — "0 abandon" only appears after it
-  // has been confirmed with next.
-  await expect(preview).toHaveText('');
-  await expect(filler).toHaveText('');
-  await next.click();
-  await binary.locator('[data-action="back"]').click();
-  await expect(preview).toHaveText('abandon');
-  await expect(filler).toHaveText('0');
+  // The keypad has rows of 3 digits plus 0 and delete.
+  await expect(numeric.locator('.auth-num-key')).toHaveCount(11);
 
-  // Advance to the last word leaving the previous ones at 0 ("abandon").
+  // An untouched word shows an empty display — confirming with next enters
+  // it as 0, visible when stepping back.
+  await expect(display).toHaveText('');
+  await next.click();
+  await numeric.locator('[data-action="back"]').click();
+  await expect(display).toHaveText('0');
+
+  // Advance to the last word leaving the previous ones at 0.
   for (let i = 0; i < 11; i += 1) await next.click();
   await expect(next).toHaveText('Use phrase');
 
-  await binary.locator('.auth-bit').nth(9).click();
-  await binary.locator('.auth-bit').nth(10).click();
-  // The word appears above the grid; the number fills the free frame.
-  await expect(preview).toHaveText('about');
-  await expect(filler).toHaveText('3');
+  // Typing and deleting digits edits the current number (31 → 3).
+  await key('3').click();
+  await key('1').click();
+  await expect(display).toHaveText('31');
+  await numeric.locator('[data-action="delete"]').click();
+  await expect(display).toHaveText('3');
 
   await next.click();
   await expect(input).toHaveValue(
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ',
   );
-  await expect(binary).toBeHidden();
+  await expect(numeric).toBeHidden();
 
   // An invalid checksum is rejected with an explanation. Reopening on a full
   // phrase lands on the last word ("Use phrase").
-  await page.locator('#auth-seed-binary-toggle').click();
+  await page.locator('#auth-seed-numeric-toggle').click();
   await expect(next).toHaveText('Use phrase');
-  await binary.locator('.auth-bit').nth(10).click();
+  await numeric.locator('[data-action="delete"]').click();
+  await key('4').click();
   await next.click();
   await expect(page.locator('#auth-error')).toContainText('checksum');
-  await expect(binary).toBeVisible();
+  await expect(numeric).toBeVisible();
 });
 
-test('binary grid pre-fills from typed words and can step back', async ({ page }) => {
+test('numeric wizard pre-fills from typed words or numbers and caps at 2047', async ({ page }) => {
   const input = page.locator('#auth-passphrase-input');
-  await input.fill('about zoo');
-  await page.locator('#auth-seed-binary-toggle').click();
+  await input.fill('about 2047');
+  await page.locator('#auth-seed-numeric-toggle').click();
 
-  // Two words typed: the wizard opens on word 3, still empty.
-  const binary = page.locator('#auth-seed-binary');
-  const next = binary.locator('[data-action="next"]');
-  const back = binary.locator('[data-action="back"]');
-  const preview = binary.locator('.auth-bit-preview');
+  // Two words entered (one as a word, one as a number): the wizard opens on
+  // word 3, still empty.
+  const numeric = page.locator('#auth-seed-numeric');
+  const next = numeric.locator('[data-action="next"]');
+  const back = numeric.locator('[data-action="back"]');
+  const display = numeric.locator('.auth-num-display');
   await expect(next).toHaveText('3 of 12 ›');
-  await expect(preview).toHaveText('');
-  await expect(binary.locator('.auth-bit.is-on')).toHaveCount(0);
+  await expect(display).toHaveText('');
+
+  // Digits that would exceed 2047 are ignored.
+  await numeric.locator('[data-digit="2"]').click();
+  await numeric.locator('[data-digit="0"]').click();
+  await numeric.locator('[data-digit="4"]').click();
+  await numeric.locator('[data-digit="8"]').click();
+  await expect(display).toHaveText('204');
+  await numeric.locator('[data-digit="7"]').click();
+  await expect(display).toHaveText('2047');
 
   await back.click();
   await expect(next).toHaveText('2 of 12 ›');
-  await expect(preview).toHaveText('zoo');
-  await expect(binary.locator('.auth-bit-filler')).toHaveText('2047');
-  await expect(binary.locator('.auth-bit.is-on')).toHaveCount(11);
+  await expect(display).toHaveText('2047');
 
   await back.click();
   await expect(next).toHaveText('1 of 12 ›');
-  await expect(preview).toHaveText('about');
-  await expect(binary.locator('.auth-bit-filler')).toHaveText('3');
+  await expect(display).toHaveText('3');
   await expect(back).toBeDisabled();
+});
+
+test('a phrase written as numbers is accepted in the text box', async ({ page }) => {
+  const input = page.locator('#auth-passphrase-input');
+  await input.fill('0 0 0 0 0 0 0 0 0 0 0 3');
+  await input.blur();
+  await expect(input).toHaveValue(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ',
+  );
+});
+
+test('a phrase pasted as its Base58 code is accepted in the text box', async ({ page }) => {
+  const input = page.locator('#auth-passphrase-input');
+  // Base58 of the 16 zero entropy bytes behind "abandon ×11 about": each
+  // zero byte encodes as a leading "1".
+  await input.fill('1111111111111111');
+  await input.blur();
+  await expect(input).toHaveValue(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ',
+  );
+});
+
+test('a legacy Base64 code is still accepted in the text box', async ({ page }) => {
+  const input = page.locator('#auth-passphrase-input');
+  // Base64 of the same 16 zero entropy bytes, the pre-Base58 backup form.
+  await input.fill('AAAAAAAAAAAAAAAAAAAAAA==');
+  await input.blur();
+  await expect(input).toHaveValue(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ',
+  );
+});
+
+test('registration reveals the numbers and the Base58 code with separate copy buttons', async ({ page }) => {
+  await page.locator('[data-auth-tab="register"]').click();
+  await page.locator('#auth-super-password').fill('test-admin-password');
+  await page.locator('#auth-register-form button[type="submit"]').click();
+
+  const numbers = page.locator('#auth-mnemonic-numbers');
+  const code = page.locator('#auth-mnemonic-code');
+  await expect(numbers).toHaveText('0 0 0 0 0 0 0 0 0 0 0 3');
+  await expect(code).toHaveText('1111111111111111');
+
+  // Each block has its own copy button.
+  await expect(page.locator('#auth-copy-numbers')).toBeVisible();
+  await expect(page.locator('#auth-copy-code')).toBeVisible();
 });
 
 test('voice dictation appends words snapped to the BIP39 wordlist', async ({ page }) => {

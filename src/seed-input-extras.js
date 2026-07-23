@@ -7,25 +7,147 @@
 //    the closest BIP39 word, since the wordlist is a closed set of 2048
 //    English words.
 //
-// 2. A word-by-word binary grid (ported from the bip.lol vault) where tapping
-//    squares sets the 1s of the word's 11-bit BIP39 index.
+// 2. A word-by-word numeric wizard: each BIP39 word is entered as its
+//    decimal number (0-2047) on a phone-style keypad with 3 digits per row.
+//
+// Everywhere in the app the phrase is displayed and entered as numbers; the
+// words themselves only exist in the underlying mnemonic.
 
-import { validateMnemonic } from '@scure/bip39';
+import { entropyToMnemonic, mnemonicToEntropy, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 const WORD_COUNT = 12;
-const BITS_PER_WORD = 11;
+const MAX_WORD_INDEX = wordlist.length - 1; // 2047
 
 const wordSet = new Set(wordlist);
 
-export function bitsToIndex(bits) {
-  return bits.reduce((acc, bit) => (acc << 1) | (bit ? 1 : 0), 0);
+// "abandon ability … zoo" → "0 1 … 2047". Returns '' if any word is unknown.
+export function phraseToNumbers(phrase) {
+  const words = String(phrase || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const numbers = words.map((word) => wordlist.indexOf(word));
+  if (numbers.some((n) => n < 0)) return '';
+  return numbers.join(' ');
 }
 
-export function indexToBits(index) {
-  const bits = [];
-  for (let b = BITS_PER_WORD - 1; b >= 0; b -= 1) bits.push(((index >> b) & 1) === 1);
-  return bits;
+// Replaces digit tokens (0-2047) in a phrase with their BIP39 words, so a
+// backup saved as numbers can be typed or pasted straight into the sign-in
+// box. Non-numeric tokens pass through untouched.
+export function numbersToPhrase(value) {
+  return String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => {
+      if (!/^\d{1,4}$/.test(token)) return token;
+      const index = Number(token);
+      return index <= MAX_WORD_INDEX ? wordlist[index] : token;
+    })
+    .join(' ');
+}
+
+// Base58 (Bitcoin alphabet): no 0/O/I/l, so the code survives handwriting
+// and reads aloud unambiguously — which is why it replaced Base64 as the
+// compact backup form.
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function bytesToBase58(bytes) {
+  let zeros = 0;
+  while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
+
+  const digits = [];
+  for (const byte of bytes) {
+    let carry = byte;
+    for (let i = 0; i < digits.length; i += 1) {
+      const value = digits[i] * 256 + carry;
+      digits[i] = value % 58;
+      carry = Math.floor(value / 58);
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = Math.floor(carry / 58);
+    }
+  }
+
+  let out = '1'.repeat(zeros);
+  for (let i = digits.length - 1; i >= 0; i -= 1) out += BASE58_ALPHABET[digits[i]];
+  return out;
+}
+
+function base58ToBytes(value, expectedLength) {
+  let zeros = 0;
+  let start = 0;
+  while (start < value.length && value[start] === '1') {
+    zeros += 1;
+    start += 1;
+  }
+
+  const bytes = [];
+  for (let i = start; i < value.length; i += 1) {
+    const digit = BASE58_ALPHABET.indexOf(value[i]);
+    if (digit < 0) return null;
+    let carry = digit;
+    for (let j = 0; j < bytes.length; j += 1) {
+      const v = bytes[j] * 58 + carry;
+      bytes[j] = v & 0xff;
+      carry = v >> 8;
+    }
+    while (carry > 0) {
+      bytes.push(carry & 0xff);
+      carry >>= 8;
+    }
+  }
+
+  for (let z = 0; z < zeros; z += 1) bytes.push(0);
+  bytes.reverse();
+  if (bytes.length !== expectedLength) return null;
+  return Uint8Array.from(bytes);
+}
+
+// "abandon … zoo" → the 16 entropy bytes as ~22 Base58 characters, the
+// compact backup form. Returns '' for anything that is not a valid 12-word
+// mnemonic.
+export function phraseToBase58(phrase) {
+  try {
+    const entropy = mnemonicToEntropy(String(phrase || '').trim().toLowerCase(), wordlist);
+    return bytesToBase58(entropy);
+  } catch {
+    return '';
+  }
+}
+
+// Decodes the Base58 backup form back into the 12 words. Returns '' when the
+// input does not decode to exactly 16 bytes.
+export function base58ToPhrase(value) {
+  const raw = String(value || '').trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{12,25}$/.test(raw)) return '';
+  const bytes = base58ToBytes(raw, 16);
+  if (!bytes) return '';
+  try {
+    return entropyToMnemonic(bytes, wordlist);
+  } catch {
+    return '';
+  }
+}
+
+// Decodes the legacy Base64 backup form (shown before the switch to Base58)
+// so old saved codes keep working. Returns '' when the input is not Base64
+// for exactly 16 bytes.
+export function base64ToPhrase(value) {
+  const raw = String(value || '').trim();
+  if (!/^[A-Za-z0-9+/]{22}(==)?$/.test(raw)) return '';
+  try {
+    const bin = atob(`${raw.slice(0, 22)}==`);
+    if (bin.length !== 16) return '';
+    return entropyToMnemonic(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)), wordlist);
+  } catch {
+    return '';
+  }
+}
+
+// Accepts any backup form — the Base58 code (or a legacy Base64 one), the
+// 12 numbers, or the words themselves — and returns a phrase of words.
+export function decodePhraseInput(value) {
+  return base58ToPhrase(value) || base64ToPhrase(value) || numbersToPhrase(value);
 }
 
 function getSpeechRecognitionCtor() {
@@ -51,8 +173,14 @@ function editDistance(a, b, max) {
 }
 
 // Map a recognized token to the closest BIP39 word, or null if nothing is
-// close enough to trust.
+// close enough to trust. Digit tokens are treated as word numbers.
 export function snapToBip39Word(token) {
+  const digits = String(token || '').replace(/[^\d]/g, '');
+  if (digits && digits === String(token || '').replace(/[^\da-z]/gi, '')) {
+    const index = Number(digits);
+    return index <= MAX_WORD_INDEX ? wordlist[index] : null;
+  }
+
   const t = String(token || '').toLowerCase().replace(/[^a-z]/g, '');
   if (!t || t.length < 2) return null;
   if (wordSet.has(t)) return t;
@@ -111,8 +239,8 @@ function appendWords(textarea, words) {
 export function attachSeedInputExtras({
   textarea,
   micBtn,
-  binaryToggle,
-  binaryEl,
+  numericToggle,
+  numericEl,
   onError,
 }) {
   if (!textarea) return { stopVoice() {}, hidePanels() {} };
@@ -235,6 +363,12 @@ export function attachSeedInputExtras({
   textarea.addEventListener('blur', () => {
     const raw = textarea.value.trim();
     if (!raw || isCompletePhrase(raw)) return;
+    const fromCode = base58ToPhrase(raw) || base64ToPhrase(raw);
+    if (fromCode) {
+      textarea.value = `${fromCode} `;
+      dispatchInput(textarea);
+      return;
+    }
     const snapped = raw.split(/\s+/).map(snapToBip39Word);
     if (snapped.some((word) => !word)) return;
     const phrase = snapped.join(' ');
@@ -247,42 +381,27 @@ export function attachSeedInputExtras({
     if (document.hidden) stopVoice();
   });
 
-  // ---- Word-by-word binary grid ----
+  // ---- Word-by-word numeric wizard ----
   //
-  // One BIP39 index per word plus whether that word has been entered yet (an
-  // untouched word shows no preview, so a fresh word is not confused with an
-  // entered "0 abandon" — pressing next confirms the current value, even 0).
-  //
-  // Ported from bip.lol: 12 big frames, 4 per row like the rest of the UI.
-  // The first 11 are the word's bits; the free 12th frame shows the number
-  // and the word is written in a row above the grid.
+  // Each of the 12 words is entered as its decimal number (0-2047) on a
+  // phone-style keypad, one word at a time. The typed digits for each row
+  // are kept as strings so an untouched word ('') is not confused with an
+  // entered 0 — pressing next confirms the current value, even 0.
 
-  const values = Array(WORD_COUNT).fill(0);
-  const entered = Array(WORD_COUNT).fill(false);
+  const digits = Array(WORD_COUNT).fill('');
   let currentRow = 0;
   let lastPrefillValue = null;
 
-  function syncBinaryView() {
-    if (!binaryEl?.childElementCount) return;
+  function syncNumericView() {
+    if (!numericEl?.childElementCount) return;
 
-    const value = values[currentRow];
-    const word = wordlist[value];
-    const isEntered = entered[currentRow];
+    const display = numericEl.querySelector('.auth-num-display');
+    display.textContent = digits[currentRow];
+    display.classList.toggle('is-empty', digits[currentRow] === '');
 
-    const bits = indexToBits(value);
-    binaryEl.querySelector('.auth-bit-preview').textContent = isEntered ? word : '';
-    binaryEl.querySelectorAll('.auth-bit').forEach((cell, col) => {
-      cell.classList.toggle('is-on', bits[col]);
-      cell.setAttribute('aria-pressed', bits[col] ? 'true' : 'false');
-      cell.setAttribute('aria-label', `Word ${currentRow + 1}, bit ${col + 1}`);
-    });
-    const filler = binaryEl.querySelector('.auth-bit-filler');
-    filler.textContent = isEntered ? String(value) : '';
-    filler.dataset.len = String(String(value).length);
-
-    const back = binaryEl.querySelector('[data-action="back"]');
+    const back = numericEl.querySelector('[data-action="back"]');
     if (back) back.disabled = currentRow === 0;
-    const next = binaryEl.querySelector('[data-action="next"]');
+    const next = numericEl.querySelector('[data-action="next"]');
     if (next) {
       next.textContent = currentRow === WORD_COUNT - 1
         ? 'Use phrase'
@@ -290,29 +409,28 @@ export function attachSeedInputExtras({
     }
   }
 
-  // Words already typed in the textarea start pre-filled and the wizard opens
-  // on the first word still missing. If the textarea has not changed since
-  // the last prefill, in-session progress is kept.
+  // Words already in the textarea (as words or numbers) start pre-filled and
+  // the wizard opens on the first word still missing. If the textarea has
+  // not changed since the last prefill, in-session progress is kept.
   function prefillWizardFromTextarea() {
     const raw = textarea.value.trim();
     if (raw !== lastPrefillValue) {
       lastPrefillValue = raw;
-      const words = raw.toLowerCase().split(/\s+/).filter(Boolean);
+      const words = decodePhraseInput(raw).toLowerCase().split(/\s+/).filter(Boolean);
       for (let row = 0; row < WORD_COUNT; row += 1) {
         const index = row < words.length ? wordlist.indexOf(words[row]) : -1;
-        values[row] = index >= 0 ? index : 0;
-        entered[row] = index >= 0;
+        digits[row] = index >= 0 ? String(index) : '';
       }
-      const firstMissing = entered.findIndex((flag) => !flag);
+      const firstMissing = digits.findIndex((value) => value === '');
       currentRow = firstMissing === -1 ? WORD_COUNT - 1 : firstMissing;
     }
-    syncBinaryView();
+    syncNumericView();
   }
 
   function applyWizardPhrase() {
-    const phrase = values.map((value) => wordlist[value]).join(' ');
+    const phrase = digits.map((value) => wordlist[Number(value || '0')]).join(' ');
     if (!validateMnemonic(phrase, wordlist)) {
-      reportError('These words do not form a valid phrase (checksum fails) — compare each word with your backup');
+      reportError('These numbers do not form a valid phrase (checksum fails) — compare each number with your backup');
       return;
     }
     reportError('');
@@ -326,77 +444,98 @@ export function attachSeedInputExtras({
     if (action === 'back') {
       if (currentRow > 0) {
         currentRow -= 1;
-        syncBinaryView();
+        syncNumericView();
       }
       return;
     }
-    entered[currentRow] = true;
+    // Confirming an empty row enters it as 0.
+    if (digits[currentRow] === '') digits[currentRow] = '0';
     if (currentRow === WORD_COUNT - 1) {
       applyWizardPhrase();
     } else {
       currentRow += 1;
-      syncBinaryView();
+      syncNumericView();
     }
   }
 
-  function buildBinaryGrid() {
-    if (!binaryEl || binaryEl.childElementCount) return;
-    const cells = [];
-    for (let col = 0; col < BITS_PER_WORD; col += 1) {
-      cells.push(`<button type="button" class="auth-bit" data-col="${col}" aria-pressed="false"></button>`);
-    }
-    cells.push('<span class="auth-bit-filler" aria-hidden="true"></span>');
-    binaryEl.innerHTML = `
-      <div class="auth-bit-preview" aria-live="polite"></div>
-      <div class="auth-bit-row">${cells.join('')}</div>
-      <div class="auth-bit-nav">
-        <button type="button" class="auth-bit-back" data-action="back" aria-label="Previous word">&lsaquo;</button>
-        <button type="button" class="auth-bit-next" data-action="next">1 of ${WORD_COUNT} &rsaquo;</button>
+  function pressDigit(digit) {
+    const candidate = `${digits[currentRow]}${digit}`;
+    if (Number(candidate) > MAX_WORD_INDEX) return;
+    digits[currentRow] = String(Number(candidate)); // collapses leading zeros
+    syncNumericView();
+  }
+
+  function pressDelete() {
+    digits[currentRow] = digits[currentRow].slice(0, -1);
+    syncNumericView();
+  }
+
+  function buildNumericPad() {
+    if (!numericEl || numericEl.childElementCount) return;
+    const keyRows = [
+      ['1', '2', '3'],
+      ['4', '5', '6'],
+      ['7', '8', '9'],
+    ];
+    const rowsHtml = keyRows
+      .map((row) => row
+        .map((key) => `<button type="button" class="auth-num-key" data-digit="${key}" aria-label="Digit ${key}">${key}</button>`)
+        .join(''))
+      .join('');
+
+    numericEl.innerHTML = `
+      <div class="auth-num-display is-empty" aria-live="polite"></div>
+      <div class="auth-num-pad">
+        ${rowsHtml}
+        <span class="auth-num-spacer" aria-hidden="true"></span>
+        <button type="button" class="auth-num-key" data-digit="0" aria-label="Digit 0">0</button>
+        <button type="button" class="auth-num-key auth-num-delete" data-action="delete" aria-label="Delete digit">&#9003;</button>
+      </div>
+      <div class="auth-num-nav">
+        <button type="button" class="auth-num-back" data-action="back" aria-label="Previous word">&lsaquo;</button>
+        <button type="button" class="auth-num-next" data-action="next">1 of ${WORD_COUNT} &rsaquo;</button>
       </div>`;
 
-    binaryEl.addEventListener('mousedown', (event) => event.preventDefault());
-    binaryEl.addEventListener('click', (event) => {
+    numericEl.addEventListener('mousedown', (event) => event.preventDefault());
+    numericEl.addEventListener('click', (event) => {
       const action = event.target.closest('[data-action]');
       if (action) {
-        handleWizardNav(action.dataset.action);
+        if (action.dataset.action === 'delete') {
+          pressDelete();
+        } else {
+          handleWizardNav(action.dataset.action);
+        }
         return;
       }
-      const bit = event.target.closest('.auth-bit');
-      if (!bit) return;
-      const col = Number(bit.dataset.col);
-      if (!Number.isInteger(col)) return;
-      const bits = indexToBits(values[currentRow]);
-      bits[col] = !bits[col];
-      values[currentRow] = bitsToIndex(bits);
-      entered[currentRow] = true;
-      syncBinaryView();
+      const key = event.target.closest('[data-digit]');
+      if (key) pressDigit(key.dataset.digit);
     });
   }
 
-  function hideBinary() {
-    binaryEl?.setAttribute('hidden', '');
-    binaryToggle?.classList.remove('is-active');
-    binaryToggle?.setAttribute('aria-expanded', 'false');
+  function hideNumeric() {
+    numericEl?.setAttribute('hidden', '');
+    numericToggle?.classList.remove('is-active');
+    numericToggle?.setAttribute('aria-expanded', 'false');
   }
 
-  function showBinary() {
-    buildBinaryGrid();
+  function showNumeric() {
+    buildNumericPad();
     prefillWizardFromTextarea();
-    binaryEl?.removeAttribute('hidden');
-    binaryToggle?.classList.add('is-active');
-    binaryToggle?.setAttribute('aria-expanded', 'true');
+    numericEl?.removeAttribute('hidden');
+    numericToggle?.classList.add('is-active');
+    numericToggle?.setAttribute('aria-expanded', 'true');
   }
 
-  binaryToggle?.addEventListener('click', () => {
-    if (binaryEl?.hasAttribute('hidden')) {
-      showBinary();
+  numericToggle?.addEventListener('click', () => {
+    if (numericEl?.hasAttribute('hidden')) {
+      showNumeric();
     } else {
-      hideBinary();
+      hideNumeric();
     }
   });
 
   function hidePanels() {
-    hideBinary();
+    hideNumeric();
   }
 
   return { stopVoice, hidePanels };

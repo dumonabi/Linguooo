@@ -6,7 +6,10 @@
   --border: #1c2b25;
   --text: #dffce9;
   --text-muted: #dffce9;
-  --compose-text: #dffce9;
+  /* Slightly brighter than --text: this is the text users actually read at
+     length, so it gets a touch more luminosity while frames and buttons
+     keep the dimmer phosphor green. */
+  --compose-text: #f2fdf6;
   --translation-text: #ffffff;
   --accent: #22c55e;
   --accent-light: #4ade80;
@@ -14,7 +17,10 @@
   --accent-glow: rgba(34, 197, 94, 0.35);
   --radius: 16px;
   --font: 'DM Sans', system-ui, sans-serif;
-  /* Portrait-first unit: full width in tall views; capped at 4/5 of viewport height when wider */
+  /* Sizing unit for controls and text: full width in tall views, capped at
+     4/5 of viewport height on wide screens so buttons and type stay sane.
+     Containers themselves always span the full screen width — only element
+     sizes derive from this reference. */
   --layout-ref: min(100vw, 80dvh);
   --compose-action-size: calc(var(--layout-ref) / 6);
   --compose-action-icon: calc(var(--layout-ref) / 6);
@@ -25,12 +31,22 @@
   --lang-bar-rect-height: var(--page-button-height);
   --lang-bar-third: calc((var(--layout-ref) - 2 * var(--lang-bar-pad) - 2 * var(--lang-bar-gap)) / 3);
   --lang-bar-slot-width: var(--lang-bar-third);
-  /* Main text scale, set by character density: the app's monospace glyphs
-     measure 0.5625em (0.6em minus the -0.04em tracking), so layout-ref /
-     22.5 fits exactly 40 characters across the full layout width — 10 per
-     quarter-width frame (previously ~28 across). */
-  --ui-text-size: calc(var(--layout-ref) / 22.5);
+  /* Main text scale, driven by the *smaller* screen dimension:
+     - square or portrait screens: scales with the width, so exactly 24
+       characters fit across the page (glyphs measure 0.5625em; 24 × 0.5625
+       = 13.5);
+     - landscape screens: scales with the height instead, keeping the same
+       glyph size and line height as a square screen of that height — 8
+       lines always fit and lines simply hold more characters. */
+  --ui-text-size: calc(min(100vw, 100dvh) / 13.5);
   --ui-text-leading: 1.12;
+  /* Leading for text meant to be read at length (compose box, messages):
+     13.5 / 8 = 1.6875, so each line box measures min(100vw, 100dvh) / 8 —
+     8 lines of text span exactly the smaller screen dimension on any
+     screen shape. */
+  --reading-leading: 1.6875;
+  /* User-adjustable message text size (A− / A+ in the profile panel). */
+  --message-text-scale: 1;
 }
 
 *,
@@ -61,8 +77,9 @@ html.user-profile-menu-open body {
 }
 
 #app {
+  /* Full-width philosophy: the app always spans the entire screen width. */
   width: 100%;
-  max-width: var(--layout-ref);
+  max-width: none;
   margin: 0 auto;
   padding: max(0.5rem, env(safe-area-inset-top)) max(0.8rem, env(safe-area-inset-right)) max(1.25rem, env(safe-area-inset-bottom)) max(0.8rem, env(safe-area-inset-left));
   min-height: 100dvh;
@@ -74,14 +91,12 @@ html.user-profile-menu-open body {
   line-height: var(--ui-text-leading);
 }
 
+/* The language/user bar scrolls away with the page (not sticky), so the
+   compose box can take the top of the screen while writing. */
 #app.session-active .language-bar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
   background: #000000;
   padding-top: max(0.25rem, env(safe-area-inset-top));
   padding-bottom: 0.35rem;
-  box-shadow: none;
 }
 
 .language-bar {
@@ -984,7 +999,7 @@ html.user-profile-menu-open body {
   width: 100%;
   border: none;
   font: inherit;
-  line-height: var(--ui-text-leading);
+  line-height: var(--reading-leading);
   padding: 0.9rem 1rem 0.55rem;
 }
 
@@ -1017,11 +1032,12 @@ html.user-profile-menu-open body {
   color: transparent;
 }
 
+/* Thin green line caret (WhatsApp-style width, terminal-style blink). */
 .compose-caret,
 .lang-picker-caret {
   position: absolute;
   border-radius: 1px;
-  background: var(--text);
+  background: var(--accent-light);
   pointer-events: none;
   z-index: 1;
   box-sizing: border-box;
@@ -1050,7 +1066,7 @@ html.user-profile-menu-open body {
   color: var(--compose-text);
   font: inherit;
   font-size: inherit;
-  line-height: 1.45;
+  line-height: var(--reading-leading);
   letter-spacing: 0;
   white-space: pre;
   pointer-events: none;
@@ -1078,7 +1094,7 @@ html.user-profile-menu-open body {
   background: transparent;
   color: var(--compose-text);
   font: inherit;
-  line-height: var(--ui-text-leading);
+  line-height: var(--reading-leading);
   padding: 0.9rem 1rem 0.55rem;
   caret-color: transparent;
 }
@@ -1532,16 +1548,99 @@ html.user-profile-menu-open body {
   gap: 0;
   min-height: 260px;
   background: #000000;
+  /* Message text follows the user's A− / A+ preference; the rest of the UI
+     keeps the density-based size. */
+  font-size: calc(var(--ui-text-size) * var(--message-text-scale));
 }
 
 .translate-below-panel {
   display: flex;
   justify-content: center;
+  align-items: center;
+  gap: 0.7rem;
   padding: 0.25rem 0 0.85rem;
 }
 
 .translate-below-panel:has(.compose-translate-below[hidden]) {
   display: none;
+}
+
+/* ---- Draft improvement (magic wands) ---- */
+
+.compose-improve-wand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--page-symbol-size);
+  height: var(--page-symbol-size);
+  min-width: var(--page-symbol-size);
+  min-height: var(--page-symbol-size);
+  padding: 0;
+  border-radius: 50%;
+  color: var(--accent-light);
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(42, 235, 108, 0.45);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.compose-improve-wand svg {
+  width: calc(var(--page-symbol-size) * 0.62);
+  height: calc(var(--page-symbol-size) * 0.62);
+  flex-shrink: 0;
+}
+
+.compose-improve-wand:not(:disabled):active {
+  transform: scale(0.94);
+}
+
+.compose-improve-wand:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* display:flex on these buttons would otherwise beat the UA [hidden] rule. */
+.compose-improve-wand[hidden],
+.compose-improve-undo[hidden] {
+  display: none;
+}
+
+.compose-improve-wand.is-loading {
+  animation: improve-btn-loading 0.9s ease-in-out infinite;
+}
+
+@keyframes improve-btn-loading {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.compose-improve-undo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--page-symbol-size) * 0.9);
+  height: calc(var(--page-symbol-size) * 0.9);
+  min-width: calc(var(--page-symbol-size) * 0.9);
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: color 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.compose-improve-undo svg {
+  width: 55%;
+  height: 55%;
+}
+
+.compose-improve-undo:not(:disabled):active {
+  transform: scale(0.94);
 }
 
 .message-panel-body {
@@ -1602,7 +1701,7 @@ html.user-profile-menu-open body {
 .message-translated-text {
   display: block;
   width: 100%;
-  line-height: 1.45;
+  line-height: var(--reading-leading);
   word-break: break-word;
   -webkit-tap-highlight-color: transparent;
 }
@@ -1885,7 +1984,10 @@ html.user-profile-menu-open body {
 .icon-btn.share-btn-inline.is-action-ack,
 .icon-btn.listen-btn.is-action-ack,
 .icon-btn.share-audio-btn.is-action-ack,
-.icon-btn.playback-seek-btn.is-action-ack {
+.icon-btn.playback-seek-btn.is-action-ack,
+.compose-copy-btn.is-action-ack,
+.compose-speak-btn.is-action-ack,
+.compose-new-btn.is-action-ack {
   animation: actionBtnAck 0.36s cubic-bezier(0.34, 1.45, 0.64, 1);
 }
 
@@ -1894,7 +1996,10 @@ html.user-profile-menu-open body {
   .icon-btn.share-btn-inline.is-action-ack,
   .icon-btn.listen-btn.is-action-ack,
   .icon-btn.share-audio-btn.is-action-ack,
-  .icon-btn.playback-seek-btn.is-action-ack {
+  .icon-btn.playback-seek-btn.is-action-ack,
+  .compose-copy-btn.is-action-ack,
+  .compose-speak-btn.is-action-ack,
+  .compose-new-btn.is-action-ack {
     animation: actionBtnAckReduced 0.22s ease;
   }
 }
@@ -2153,9 +2258,8 @@ html.user-profile-menu-open body {
 .auth-gate[hidden] { display: none; }
 
 .auth-card {
-  /* Same portrait-first sizing as the app: full width, capped at 4/5 of the
-     viewport height. */
-  width: min(100%, var(--layout-ref));
+  /* Full-width philosophy: the card spans the whole gate width. */
+  width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2286,11 +2390,10 @@ html.user-profile-menu-open body {
   50% { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0); }
 }
 
-/* Binary seed grid (ported from bip.lol, laid out like the app's big
-   quarter-width frames): one word at a time — 12 frames, 4 per row. The
-   first 11 are the word's bits, the free 12th frame shows the word's number,
-   and the word itself is written in a row above the grid. */
-.auth-binary {
+/* Numeric seed wizard: one word at a time, entered as its decimal number
+   (0-2047) on a phone-style keypad — 3 digits per row, then a
+   spacer / 0 / delete row. */
+.auth-numeric {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -2298,31 +2401,36 @@ html.user-profile-menu-open body {
   text-align: left;
 }
 
-.auth-binary[hidden] {
+.auth-numeric[hidden] {
   display: none;
 }
 
-/* The current word, revealed only once it has been entered. Reserves its
-   line so the grid does not jump. */
-.auth-bit-preview {
+/* The number typed for the current word. Reserves its line so the pad does
+   not jump; a subtle dash marks an empty (not yet entered) word. */
+.auth-num-display {
   min-height: 1.15em;
   color: var(--accent-light);
   font-weight: 700;
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.4);
   line-height: 1.15;
   padding-left: 2px;
 }
 
-.auth-bit-row {
+.auth-num-display.is-empty::before {
+  content: '—';
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.auth-num-pad {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
 }
 
-.auth-bit,
-.auth-bit-filler {
+.auth-num-key {
   width: 100%;
-  aspect-ratio: 1;
+  min-height: calc((var(--layout-ref) - 3rem) / 4 * 0.62);
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface-2);
@@ -2332,50 +2440,30 @@ html.user-profile-menu-open body {
   justify-content: center;
   font-family: var(--font);
   font-weight: 700;
-  /* Frame is a quarter of the card width; the glyph scales with it. */
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.45);
+  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.34);
   line-height: 1;
   color: var(--accent-light);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 
-.auth-bit:active {
+.auth-num-key:active {
   transform: scale(0.94);
 }
 
-.auth-bit.is-on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #04140a;
+.auth-num-delete {
+  color: var(--text-muted);
 }
 
-.auth-bit-filler {
-  border-style: dashed;
-  background: transparent;
-  cursor: default;
-}
-
-/* The word's number fills the free frame; longer numbers shrink to span its
-   full width. */
-.auth-bit-filler[data-len='3'] {
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.32);
-}
-
-.auth-bit-filler[data-len='4'] {
-  font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.25);
-}
-
-/* Wizard navigation: a small ‹ to go back plus a big continue button, laid
-   on the same 4-column grid as the frames. */
-.auth-bit-nav {
+/* Wizard navigation: a small ‹ to go back plus a big continue button. */
+.auth-num-nav {
   display: grid;
   grid-template-columns: 1fr 3fr;
   gap: 4px;
 }
 
-.auth-bit-back,
-.auth-bit-next {
+.auth-num-back,
+.auth-num-next {
   min-height: calc((var(--layout-ref) - 3rem) / 4 * 0.6);
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -2389,24 +2477,24 @@ html.user-profile-menu-open body {
   -webkit-tap-highlight-color: transparent;
 }
 
-.auth-bit-back {
+.auth-num-back {
   color: var(--text-muted);
   font-size: calc((var(--layout-ref) - 3rem) / 4 * 0.34);
 }
 
-.auth-bit-back:disabled {
+.auth-num-back:disabled {
   opacity: 0.35;
   cursor: default;
 }
 
-.auth-bit-next {
+.auth-num-next {
   background: var(--accent);
   border-color: var(--accent);
   color: #04140a;
 }
 
-.auth-bit-next:active,
-.auth-bit-back:not(:disabled):active {
+.auth-num-next:active,
+.auth-num-back:not(:disabled):active {
   transform: scale(0.97);
 }
 
@@ -2456,6 +2544,8 @@ html.user-profile-menu-open body {
   line-height: 1.55;
   text-align: left;
   word-break: break-word;
+  /* The profile backup has two lines: the 12 numbers and the Base58 code. */
+  white-space: pre-line;
 }
 
 .auth-mnemonic-block {
@@ -2806,7 +2896,7 @@ html.user-profile-menu-open body {
   flex-direction: column;
   flex: 1 1 auto;
   width: 100%;
-  max-width: var(--layout-ref);
+  max-width: 100%;
   min-height: 100%;
 }
 
@@ -3728,7 +3818,7 @@ html.user-profile-menu-open body {
   flex-direction: column;
   flex: 1 0 auto;
   width: 100%;
-  max-width: var(--layout-ref);
+  max-width: 100%;
   min-height: min(100%, calc(100dvh - max(0.5rem, env(safe-area-inset-top)) - max(0.75rem, env(safe-area-inset-bottom))));
 }
 
@@ -4687,6 +4777,40 @@ html.user-profile-menu-open body {
   transform: scale(0.97);
 }
 
+/* PVC ownership verification: the captcha image with lines to read aloud. */
+.user-profile-pro-captcha {
+  display: block;
+  width: 100%;
+  margin: 0.5rem 0;
+  border: 1px solid rgba(42, 235, 108, 0.45);
+  background: #fff;
+}
+
+/* PVC training progress shown while ElevenLabs fine-tunes the voice. */
+.user-profile-pro-training {
+  width: 100%;
+  margin-top: 0.65rem;
+}
+
+.user-profile-pro-training-bar {
+  width: 100%;
+  height: 10px;
+  border: 1px solid rgba(42, 235, 108, 0.45);
+  background: var(--surface);
+}
+
+.user-profile-pro-training-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.user-profile-pro-training-pct {
+  margin-top: 0.35rem;
+  color: var(--accent-light);
+  font-weight: 600;
+}
+
 .user-profile-prompt-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -4990,6 +5114,16 @@ html.user-profile-menu-open body {
   touch-action: manipulation;
 }
 
+/* A− / A+ message text size buttons in the session drawer. */
+.user-profile-text-scale-btn {
+  font: inherit;
+  font-size: calc(var(--ui-text-size) * 0.95);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  white-space: nowrap;
+}
+
 .user-profile-session-icon-btn svg {
   width: var(--page-symbol-size);
   height: var(--page-symbol-size);
@@ -5035,6 +5169,8 @@ html.user-profile-menu-open body {
   line-height: var(--ui-text-leading);
   word-break: break-word;
   text-align: center;
+  /* The profile backup has two lines: the 12 numbers and the Base58 code. */
+  white-space: pre-line;
 }
 
 .user-profile-recovery-copy {

@@ -55,3 +55,68 @@ test('chunked audio: long translations request head and tail separately', async 
   });
   expect(audioState.listenReady).toBe(true);
 });
+
+const LONG_DRAFT = 'This first sentence is short and plays right away. Then the rest of the dictated message keeps going with plenty of additional words so the total text is clearly beyond the split threshold used by the speech chunking helper.';
+
+test('chunked audio: reading a long draft aloud fetches head and tail in parallel', async ({ page }) => {
+  const speakTexts = [];
+  await resetClientState(page);
+  await page.addInitScript(MEDIA_MOCK_INIT_SCRIPT);
+  // The mocked audio bytes are not decodable; stub Audio so play() succeeds.
+  await page.addInitScript(() => {
+    class FakeAudio extends EventTarget {
+      constructor() {
+        super();
+        this.paused = true;
+        this.src = '';
+        this.readyState = 4;
+      }
+
+      play() {
+        this.paused = false;
+        return Promise.resolve();
+      }
+
+      pause() {
+        this.paused = true;
+      }
+
+      load() {}
+
+      setAttribute() {}
+
+      removeAttribute() {}
+    }
+    // @ts-ignore
+    window.Audio = FakeAudio;
+  });
+  await setupApiMocks(page);
+
+  await page.route('**/api/speak', async (route) => {
+    const body = route.request().postDataJSON();
+    speakTexts.push(body.text);
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#compose-mic')).toBeVisible();
+
+  await page.locator('#dictation-input').fill(LONG_DRAFT);
+  const speakBtn = page.locator('#compose-speak');
+  await expect(speakBtn).toBeVisible();
+  await speakBtn.click();
+
+  await expect(speakBtn).toHaveClass(/is-playing/, { timeout: 8000 });
+  await expect.poll(() => speakTexts.length, { timeout: 8000 }).toBeGreaterThanOrEqual(2);
+
+  // The short head is requested alongside the tail; joined they cover the
+  // whole draft, so playback starts without waiting for the full audio.
+  const headText = speakTexts.find((t) => t === 'This first sentence is short and plays right away.');
+  expect(headText).toBeTruthy();
+  const joined = speakTexts.join(' ').replace(/\s+/g, ' ');
+  expect(joined).toContain('beyond the split threshold');
+});

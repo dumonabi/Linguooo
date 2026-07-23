@@ -8,13 +8,21 @@ const SAMPLE_LANGUAGES = [
  * @param {import('@playwright/test').Page} page
  * @param {{
  *   authRequired?: boolean;
+ *   user?: object;
  *   onConverse?: (request: import('@playwright/test').Request, index: number) => object | Promise<object>;
  *   onTranslate?: (request: import('@playwright/test').Request, index: number) => object | Promise<object>;
  *   onTranscribe?: (request: import('@playwright/test').Request, index: number) => object | Promise<object>;
  * }} options
  */
 export async function setupApiMocks(page, options = {}) {
-  const { authRequired = false, onConverse, onTranslate, onTranscribe } = options;
+  const {
+    authRequired = false,
+    user: userOverrides = {},
+    voiceProfile: voiceProfileOverrides = {},
+    onConverse,
+    onTranslate,
+    onTranscribe,
+  } = options;
   let converseCount = 0;
   let translateCount = 0;
   let transcribeCount = 0;
@@ -78,6 +86,7 @@ export async function setupApiMocks(page, options = {}) {
             voiceReady: false,
             voiceSampleCount: 0,
             voiceStatus: 'none',
+            ...userOverrides,
           },
         }),
       });
@@ -95,6 +104,7 @@ export async function setupApiMocks(page, options = {}) {
             voiceReady: false,
             voiceSampleCount: 0,
             voiceStatus: 'none',
+            ...userOverrides,
           },
           voiceProfile: {
             status: 'none',
@@ -112,6 +122,7 @@ export async function setupApiMocks(page, options = {}) {
             proMaxTotalMs: 10800000,
             pvcSubmitted: false,
             proSamples: [],
+            ...voiceProfileOverrides,
           },
         }),
       });
@@ -172,6 +183,7 @@ export async function setupApiMocks(page, options = {}) {
           proMaxTotalMs: 10800000,
           pvcSubmitted: false,
           proSamples: [],
+          ...voiceProfileOverrides,
         }),
       });
     }

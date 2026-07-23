@@ -6,6 +6,18 @@ export const MEDIA_MOCK_INIT_SCRIPT = () => {
       this.state = 'inactive';
       this.ondataavailable = null;
       this.onstop = null;
+      this._listeners = { stop: [], dataavailable: [] };
+    }
+
+    addEventListener(type, fn) {
+      this._listeners[type]?.push(fn);
+    }
+
+    removeEventListener(type, fn) {
+      const list = this._listeners[type];
+      if (!list) return;
+      const idx = list.indexOf(fn);
+      if (idx !== -1) list.splice(idx, 1);
     }
 
     static isTypeSupported(type) {
@@ -21,8 +33,13 @@ export const MEDIA_MOCK_INIT_SCRIPT = () => {
       this.state = 'inactive';
       const data = new Uint8Array(1400);
       const blob = new Blob([data], { type: this.mimeType });
-      this.ondataavailable?.({ data: blob, size: blob.size });
-      queueMicrotask(() => this.onstop?.());
+      const event = { data: blob, size: blob.size };
+      this.ondataavailable?.(event);
+      this._listeners.dataavailable.forEach((fn) => fn(event));
+      queueMicrotask(() => {
+        this.onstop?.();
+        this._listeners.stop.forEach((fn) => fn());
+      });
     }
 
     requestData() {

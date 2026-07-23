@@ -1,5 +1,5 @@
 import { createLangPicker, hideAllLangPickerCarets } from './lang-picker.js';
-import { listCloneVoiceLanguageCodes, supportsClonedVoice, supportsProVoice } from './elevenlabs-languages.js';
+import { listCloneVoiceLanguageCodes, supportsClonedVoice, supportsProVoice, supportsV3OnlyVoice } from './elevenlabs-languages.js';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
@@ -95,6 +95,8 @@ const composeInputWrapEl = $('#compose-input-wrap');
 const composeCaretEl = $('#compose-caret');
 const composeLoadingDotsEl = $('#compose-loading-dots');
 const dictationTranslateBtn = $('#dictation-translate');
+const improveWandBtns = Array.from(document.querySelectorAll('.compose-improve-wand'));
+const improveUndoBtn = $('#compose-improve-undo');
 
 const LOADING_DOT_MS = 500;
 const LOADING_DOT_MAX = 20;
@@ -139,6 +141,17 @@ function speakModeForLang(lang) {
 
 function speakModeForMessage(msg) {
   return speakModeForLang(msg.targetLanguage);
+}
+
+// Which premium on-demand audio the PRO button offers for this message:
+// 'pro'  — Professional Voice Clone on multilingual v2 (flash-set languages)
+// 'v3'   — instant clone on eleven_v3, for languages flash cannot clone
+//          (e.g. Thai); needs the user's voice profile
+// null   — no premium option for this language
+function premiumAudioQuality(msg) {
+  if (supportsProVoice(msg.targetLanguage)) return 'pro';
+  if (supportsV3OnlyVoice(msg.targetLanguage) && isPersonalVoiceReady()) return 'v3';
+  return null;
 }
 
 function syncMessageAudioCache(msg) {
@@ -324,7 +337,7 @@ function revealAudioActions(message) {
   card?.querySelector('.listen-btn')?.classList.add('is-ready');
   shareAudioBtn?.classList.add('is-ready');
   if (proBtn) {
-    if (supportsProVoice(message.targetLanguage)) {
+    if (premiumAudioQuality(message)) {
       proBtn.removeAttribute('hidden');
       proBtn.classList.add('is-ready');
     } else {
@@ -830,7 +843,7 @@ async function toggleProAudio(msg, btn) {
       const controller = new AbortController();
       const blob = await fetchSpeakBlob(msg, msg.translated, controller, {
         attempts: 1,
-        quality: 'pro',
+        quality: premiumAudioQuality(msg) || 'pro',
       });
       msg._proAudioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(blob));
     }
@@ -1472,8 +1485,20 @@ function updateComposeState() {
     composeSpeakBtn.disabled = !canUseDraftActions || draftSpeechBusy;
   }
   dictationTranslateBtn.hidden = !canUseDraftActions;
-  dictationTranslateBtn.disabled = !canUseDraftActions;
+  dictationTranslateBtn.disabled = !canUseDraftActions || improvingDraft;
   dictationTranslateBtn.classList.toggle('is-ready', canUseDraftActions);
+  // Both magic wands sit next to the translate button whenever a draft
+  // is ready; they stay visible (but disabled) while a rewrite runs.
+  const showImprove = canUseDraftActions || improvingDraft;
+  improveWandBtns.forEach((btn) => {
+    btn.hidden = !showImprove;
+    btn.disabled = !canUseDraftActions || improvingDraft;
+  });
+  if (improveUndoBtn) {
+    // Undo only exists once GPT actually changed the text.
+    improveUndoBtn.hidden = draftBeforeImprove == null || !showImprove;
+    improveUndoBtn.disabled = improvingDraft;
+  }
   recordingCancelBtn.disabled = state.stoppingRecording;
   recordingSendBtn.disabled = !state.isRecording || state.stoppingRecording;
   dictationInputEl.disabled = recordingUi || state.isRecording || state.isProcessing;
@@ -1567,15 +1592,32 @@ function syncComposeCaret() {
 
   const markerRect = marker.getBoundingClientRect();
   const wrapRect = wrap.getBoundingClientRect();
-  const { charWidth, lineHeight } = measureCharCell(mirror, style);
+  const { lineHeight } = measureCharCell(mirror, style);
 
   positionBlockCaret(caret, {
     left: markerRect.left - wrapRect.left,
     top: markerRect.top - wrapRect.top + ta.scrollTop,
-    charWidth,
     lineHeight,
     markerHeight: markerRect.height,
   });
+}
+
+// While typing long texts the compose box grows and the caret line can end
+// up hidden behind the on-screen keyboard or off-screen — scroll just enough
+// to keep it visible.
+function keepComposeCaretInView() {
+  if (!composeCaretEl || composeCaretEl.hidden) return;
+  const rect = composeCaretEl.getBoundingClientRect();
+  // visualViewport accounts for the mobile keyboard shrinking the view.
+  const viewBottom = window.visualViewport
+    ? window.visualViewport.offsetTop + window.visualViewport.height
+    : window.innerHeight;
+  const margin = 24;
+  if (rect.bottom > viewBottom - margin) {
+    window.scrollBy({ top: rect.bottom - (viewBottom - margin) });
+  } else if (rect.top < margin) {
+    window.scrollBy({ top: rect.top - margin });
+  }
 }
 
 function shouldRefocusComposeInput(next) {
@@ -1613,6 +1655,15 @@ function enterComposerSession() {
   });
 }
 
+// Scrolls the page down so the compose box sits at the top of the view,
+// pushing the language/user bar (no longer sticky) out of the way.
+function scrollComposeIntoView() {
+  if (!composeBoxEl) return;
+  requestAnimationFrame(() => {
+    composeBoxEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
 function showDraftPanel(text) {
   const value = String(text ?? '').trim();
   state.draftText = value;
@@ -1620,6 +1671,8 @@ function showDraftPanel(text) {
   if (!state.composerSession) enterComposerSession();
   resizeDictationInput();
   updateComposeState();
+  // Transcribed/rewritten text just appeared: bring the compose box up.
+  scrollComposeIntoView();
 }
 
 function appendToDraft(text, { prefetch = true } = {}) {
@@ -1648,6 +1701,7 @@ function clearDraftText() {
 }
 
 function emptyDraftFields() {
+  draftBeforeImprove = null;
   state.draftText = '';
   dictationInputEl.value = '';
   resizeDictationInput();
@@ -1662,6 +1716,60 @@ function getDraftText() {
 let draftSpeechBusy = false;
 let draftSpeechAudio = null;
 
+// ---- Draft improvement (magic wands) ----
+// Two wands (simplify / formal) rewrite the draft with GPT; the previous
+// version of the text is kept so one undo step is always available.
+let improvingDraft = false;
+let draftBeforeImprove = null;
+
+async function improveDraft(mode, btn) {
+  const text = getDraftText();
+  if (!text || improvingDraft || state.isProcessing || state.isRecording) return;
+
+  improvingDraft = true;
+  btn?.classList.add('is-loading');
+  updateComposeState();
+
+  try {
+    const res = await apiFetch('/api/improve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.text) {
+      showToast(data.error || 'Could not improve the text');
+      return;
+    }
+    const improved = String(data.text).trim();
+    if (improved === text) {
+      // GPT left the text untouched: nothing happened, so there is
+      // nothing to undo either.
+      showToast('The text needed no changes');
+      return;
+    }
+    draftBeforeImprove = text;
+    showDraftPanel(improved);
+    // Warm the translation of the rewritten text so pressing translate
+    // right after feels instant.
+    startDraftTranslationPrefetch(improved);
+  } catch {
+    showToast('Could not improve the text');
+  } finally {
+    improvingDraft = false;
+    btn?.classList.remove('is-loading');
+    updateComposeState();
+  }
+}
+
+function undoImproveDraft() {
+  if (draftBeforeImprove == null || improvingDraft) return;
+  const previous = draftBeforeImprove;
+  draftBeforeImprove = null;
+  showDraftPanel(previous);
+  syncDraftTranslationPrefetch();
+}
+
 function stopDraftSpeech() {
   if (draftSpeechAudio) {
     draftSpeechAudio.pause();
@@ -1669,6 +1777,72 @@ function stopDraftSpeech() {
     draftSpeechAudio = null;
   }
   composeSpeakBtn?.classList.remove('is-playing');
+}
+
+async function fetchDraftSpeechBlob(text) {
+  const res = await apiFetch('/api/speak', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      slot: activeSpeakProfileSlot(),
+    }),
+  });
+
+  if (!res.ok) {
+    let message = 'Could not generate audio';
+    try {
+      const data = await res.json();
+      message = data.error || message;
+    } catch {
+      if (res.status === 429) message = 'Too many audio requests — wait a moment';
+    }
+    throw new Error(message);
+  }
+
+  const blob = await res.blob();
+  if (!blob.size) throw new Error('Could not generate audio');
+  return blob;
+}
+
+// Plays one part of the draft audio; when the head part ends and the tail
+// blob has landed (it was fetched in parallel), playback chains into it.
+async function playDraftSpeechPart(blob, tailPromise) {
+  const url = URL.createObjectURL(blob);
+  const audio = createPlaybackAudio(url);
+  draftSpeechAudio = audio;
+  composeSpeakBtn?.classList.add('is-playing');
+
+  const releaseUi = () => {
+    if (draftSpeechAudio === audio) {
+      draftSpeechAudio = null;
+      composeSpeakBtn?.classList.remove('is-playing');
+    }
+  };
+
+  audio.onended = () => {
+    URL.revokeObjectURL(url);
+    if (!tailPromise || draftSpeechAudio !== audio) {
+      releaseUi();
+      return;
+    }
+    tailPromise
+      .then((tailBlob) => {
+        // Only chain if this playback is still the active one.
+        if (draftSpeechAudio !== audio) return;
+        return playDraftSpeechPart(tailBlob, null);
+      })
+      .catch((err) => {
+        releaseUi();
+        showToast(err?.message || 'Could not speak message');
+      });
+  };
+  audio.onerror = () => {
+    URL.revokeObjectURL(url);
+    releaseUi();
+  };
+
+  await audio.play();
 }
 
 async function speakDraftAloud() {
@@ -1685,48 +1859,17 @@ async function speakDraftAloud() {
   updateComposeState();
 
   try {
-    const res = await apiFetch('/api/speak', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        slot: activeSpeakProfileSlot(),
-      }),
-    });
-
-    if (!res.ok) {
-      let message = 'Could not generate audio';
-      try {
-        const data = await res.json();
-        message = data.error || message;
-      } catch {
-        if (res.status === 429) message = 'Too many audio requests — wait a moment';
-      }
-      throw new Error(message);
-    }
-
-    const blob = await res.blob();
-    if (!blob.size) throw new Error('Could not generate audio');
+    // Same fast-start mechanism as translations: the first sentence is
+    // synthesized on its own and starts playing almost immediately while
+    // the rest of the audio generates in parallel.
+    const { head, tail } = splitSpeechText(text);
+    const tailPromise = tail ? fetchDraftSpeechBlob(tail) : null;
+    tailPromise?.catch(() => {}); // handled when the head finishes playing
+    const headBlob = await fetchDraftSpeechBlob(head);
 
     stopPlayback();
     stopDraftSpeech();
-
-    const url = URL.createObjectURL(blob);
-    const audio = createPlaybackAudio(url);
-    draftSpeechAudio = audio;
-    composeSpeakBtn?.classList.add('is-playing');
-
-    const cleanup = () => {
-      URL.revokeObjectURL(url);
-      if (draftSpeechAudio === audio) {
-        draftSpeechAudio = null;
-        composeSpeakBtn?.classList.remove('is-playing');
-      }
-    };
-    audio.onended = cleanup;
-    audio.onerror = cleanup;
-
-    await audio.play();
+    await playDraftSpeechPart(headBlob, tailPromise);
   } catch (err) {
     if (err?.name !== 'AbortError') {
       showToast(err?.message || 'Could not speak message');
@@ -1756,11 +1899,20 @@ async function copyDraftText(btn) {
 
 function bindDictation() {
   dictationInputEl.addEventListener('input', () => {
+    const hadText = Boolean(state.draftText.trim());
     state.draftText = dictationInputEl.value;
     syncDraftTranslationPrefetch();
     resizeDictationInput();
     updateComposeState();
     pulseComposeCaretTyping();
+    // First character typed into an empty box: scroll down to the compose
+    // window. Afterwards only nudge enough to keep the caret visible.
+    if (!hadText && dictationInputEl.value.trim()) {
+      scrollComposeIntoView();
+      return;
+    }
+    // After the caret has been repositioned for the new content.
+    requestAnimationFrame(keepComposeCaretInView);
   });
   dictationInputEl.addEventListener('focus', () => {
     hideAllLangPickerCarets();
@@ -1798,6 +1950,12 @@ function bindDictation() {
   dictationTranslateBtn.addEventListener('click', () => {
     void translateDraft();
   });
+  improveWandBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      void improveDraft(btn.dataset.improve, btn);
+    });
+  });
+  improveUndoBtn?.addEventListener('click', undoImproveDraft);
   composeNewBtn.addEventListener('click', () => {
     stopDraftSpeech();
     clearDraftText();
@@ -3036,7 +3194,7 @@ function createMessageCard(msg) {
   const hasAudio = Boolean(msg.audioUrl);
   const audioActionsClass = hasAudio ? ' has-audio-actions' : '';
   const hideFooter = hideTextActions || !hasAudio;
-  const showProBtn = hasAudio && supportsProVoice(msg.targetLanguage);
+  const showProBtn = hasAudio && Boolean(premiumAudioQuality(msg));
 
   el.innerHTML = `
     <div class="message-bubble">

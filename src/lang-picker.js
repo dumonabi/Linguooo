@@ -105,14 +105,13 @@ function clampCaretHorizontal(caret, frameEl, padding = 3) {
 function positionBarSearchCaret(caret, { input, frame, mirror, markerRect, style }) {
   const fieldRect = frame.getBoundingClientRect();
   const inputRect = input.getBoundingClientRect();
-  const { charWidth, lineHeight, fontSize } = measureCompactCharCell(mirror, style);
+  const { lineHeight, fontSize } = measureCompactCharCell(mirror, style);
 
   positionCompactCaret(caret, {
     left: markerRect.left - fieldRect.left,
     fieldTop: fieldRect.top,
     inputTop: inputRect.top,
     inputHeight: inputRect.height,
-    charWidth,
     lineHeight,
     fontSize,
   });
@@ -561,14 +560,13 @@ export function createCollapsibleNumberedSquareGrid(container, {
     const fieldRect = frame.getBoundingClientRect();
     const inputRect = input.getBoundingClientRect();
     const markerRect = marker.getBoundingClientRect();
-    const { charWidth, lineHeight, fontSize } = measureCompactCharCell(mirror, style);
+    const { lineHeight, fontSize } = measureCompactCharCell(mirror, style);
 
     positionCompactCaret(caret, {
       left: markerRect.left - fieldRect.left,
       fieldTop: fieldRect.top,
       inputTop: inputRect.top,
       inputHeight: inputRect.height,
-      charWidth,
       lineHeight,
       fontSize,
     });

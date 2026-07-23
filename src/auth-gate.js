@@ -5,7 +5,7 @@ import {
   setStoredUser,
 } from './auth.js';
 import { attachBip39WordAutocomplete } from './bip39-word-autocomplete.js';
-import { attachSeedInputExtras } from './seed-input-extras.js';
+import { attachSeedInputExtras, decodePhraseInput, phraseToBase58, phraseToNumbers } from './seed-input-extras.js';
 import { $ } from './dom-utils.js';
 
 let seedExtras = null;
@@ -36,16 +36,26 @@ function showRecoveryReveal(gate, phrase) {
   const signInPanel = $('#auth-panel-signin', gate);
   const registerPanel = $('#auth-panel-register', gate);
   const reveal = $('#auth-recovery-reveal', gate);
-  const text = $('#auth-mnemonic-text', gate);
+  const numbersText = $('#auth-mnemonic-numbers', gate);
+  const codeText = $('#auth-mnemonic-code', gate);
+  const codeBlock = $('#auth-mnemonic-code-block', gate);
   const continueBtn = $('#auth-continue-after-register', gate);
   const checkbox = $('#auth-saved-checkbox', gate);
 
   if (signInPanel) signInPanel.hidden = true;
   if (registerPanel) registerPanel.hidden = true;
   gate.querySelector('.auth-tabs')?.setAttribute('hidden', '');
-  if (!reveal || !text || !continueBtn || !checkbox) return;
+  if (!reveal || !numbersText || !continueBtn || !checkbox) return;
 
-  text.textContent = phrase;
+  // The backup the user saves is the numeric form of the phrase plus its
+  // compact Base58 code, each in its own block with its own copy button;
+  // the words never appear in the UI. Signing in accepts numbers, Base58
+  // (or a legacy Base64 code) or words.
+  const numbers = phraseToNumbers(phrase);
+  const code = phraseToBase58(phrase);
+  numbersText.textContent = numbers || phrase;
+  if (codeText) codeText.textContent = code;
+  if (codeBlock) codeBlock.hidden = !code;
   checkbox.checked = false;
   continueBtn.disabled = true;
   reveal.hidden = false;
@@ -79,7 +89,8 @@ export function mountAuthGate({
   const passphraseInput = $('#auth-passphrase-input', gate);
   const superPasswordInput = $('#auth-super-password', gate);
   const errorEl = $('#auth-error', gate);
-  const copyBtn = $('#auth-copy-mnemonic', gate);
+  const copyNumbersBtn = $('#auth-copy-numbers', gate);
+  const copyCodeBtn = $('#auth-copy-code', gate);
   const savedCheckbox = $('#auth-saved-checkbox', gate);
   const continueBtn = $('#auth-continue-after-register', gate);
 
@@ -95,8 +106,8 @@ export function mountAuthGate({
     seedExtras = attachSeedInputExtras({
       textarea: passphraseInput,
       micBtn: $('#auth-seed-mic', gate),
-      binaryToggle: $('#auth-seed-binary-toggle', gate),
-      binaryEl: $('#auth-seed-binary', gate),
+      numericToggle: $('#auth-seed-numeric-toggle', gate),
+      numericEl: $('#auth-seed-numeric', gate),
       onError: (message) => showError(errorEl, message),
     });
   }
@@ -108,17 +119,23 @@ export function mountAuthGate({
     });
   });
 
-  copyBtn?.addEventListener('click', async () => {
-    const phrase = $('#auth-mnemonic-text', gate)?.textContent?.trim();
-    if (!phrase) return;
-    try {
-      await navigator.clipboard.writeText(phrase);
-      copyBtn.classList.add('is-action-ack');
-      window.setTimeout(() => copyBtn.classList.remove('is-action-ack'), 360);
-    } catch {
-      showError(errorEl, 'Could not copy — select and copy manually');
-    }
-  });
+  // The numbers and the Base58 code each have their own copy button so
+  // either backup form can be saved on its own.
+  const wireCopyButton = (button, sourceSelector) => {
+    button?.addEventListener('click', async () => {
+      const value = $(sourceSelector, gate)?.textContent?.trim();
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        button.classList.add('is-action-ack');
+        window.setTimeout(() => button.classList.remove('is-action-ack'), 360);
+      } catch {
+        showError(errorEl, 'Could not copy — select and copy manually');
+      }
+    });
+  };
+  wireCopyButton(copyNumbersBtn, '#auth-mnemonic-numbers');
+  wireCopyButton(copyCodeBtn, '#auth-mnemonic-code');
 
   savedCheckbox?.addEventListener('change', () => {
     if (continueBtn) continueBtn.disabled = !savedCheckbox.checked;
@@ -146,7 +163,8 @@ export function mountAuthGate({
     submitBtn.disabled = true;
 
     try {
-      const passphrase = normalizeClientPassphrase(passphraseInput?.value);
+      // Backups are shown as numbers, so accept them typed as numbers too.
+      const passphrase = normalizeClientPassphrase(decodePhraseInput(passphraseInput?.value));
       const res = await fetch('/api/auth/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

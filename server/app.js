@@ -47,6 +47,7 @@ import {
   resolveProVoiceId,
   resolveVoiceId,
   savePvcPendingVoice,
+  savePvcVerified,
   saveProVoice,
   saveVoiceClone,
   validateProfileSlot,
@@ -57,19 +58,25 @@ import {
   createPvcVoice,
   createVoiceClone,
   generateClonedSpeech,
+  getPvcCaptcha,
+  getPvcTrainingStatus,
   isElevenLabsConfigured,
   listProfessionalVoices,
+  trainPvcVoice,
+  verifyPvcCaptcha,
 } from './elevenlabs.js';
 import {
   cloneVoiceLanguagesByModel,
   listCloneVoiceLanguageCodes,
   supportsClonedVoice,
   supportsProVoice,
+  supportsV3OnlyVoice,
 } from './elevenlabs-languages.js';
 import { waitUntil } from '@vercel/functions';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createSessionToken } from './session-token.js';
-import { isPersistentBlobEnabled, readBuffer, writeBuffer } from './persistent-store.js';
+import { isPersistentBlobEnabled, readBuffer, readText, writeBuffer, writeText } from './persistent-store.js';
+import { BASE_VOICE_PROMPTS_EN, BASE_PRO_VOICE_PROMPTS_EN } from './voice-prompt-texts.js';
 import {
   alignTranslationFields,
   detectLanguageFromTranslation,
@@ -223,6 +230,58 @@ function stripTrailingPeriod(text) {
 // 800+ output tokens in token-dense scripts (Thai, Hindi, CJK). 1,600
 // leaves ample headroom — you only pay for tokens actually generated.
 const TRANSLATION_MAX_TOKENS = 1600;
+
+// ---- Draft improvement (magic wand) ----
+// Each mode is a rewrite instruction applied to the user's draft before
+// translation. Rewrites always stay in the original language.
+const IMPROVE_PROMPTS = {
+  simplify:
+    'Rewrite the text so it is simpler and easier to understand: shorter sentences, common words, no filler. Keep the meaning, the facts and the tone of address (formal/informal) intact.',
+  fix:
+    'Correct only the spelling, grammar and punctuation errors in the text. Do not rephrase, reorder or change the wording beyond what fixing the errors requires.',
+  formal:
+    'Rewrite the text in a polite, formal register suitable for a professional message. Keep the meaning and all facts intact, and do not add new content.',
+};
+
+// ---- Voice-sample reading prompts in any language ----
+// Translated once per language from the English sources, then cached both
+// in memory and in the persistent store.
+const voicePromptsCache = new Map();
+const voicePromptsPending = new Map();
+
+function voicePromptsStoreKey(lang) {
+  return `voice-prompts/${lang}-v1.json`;
+}
+
+async function translatePromptText(openai, text, languageName) {
+  const completion = await withRetry(() =>
+    openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+      max_tokens: 2400,
+      messages: [
+        {
+          role: 'system',
+          content: `You translate scripts meant to be read aloud for voice recording. Translate the user's text into ${languageName}. Keep the same tone, energy and approximate length, and make it sound like natural spoken ${languageName} that is pleasant to read out loud. Return only the translation, nothing else.`,
+        },
+        { role: 'user', content: text },
+      ],
+    })
+  );
+  return completion.choices[0]?.message?.content?.trim() || '';
+}
+
+async function buildVoicePromptsForLang(openai, lang) {
+  const languageName = LANGUAGE_NAMES[lang];
+  const [prompts, proPrompts] = await Promise.all([
+    Promise.all(BASE_VOICE_PROMPTS_EN.map((text) => translatePromptText(openai, text, languageName))),
+    Promise.all(BASE_PRO_VOICE_PROMPTS_EN.map((text) => translatePromptText(openai, text, languageName))),
+  ]);
+  if (prompts.some((text) => !text) || proPrompts.some((text) => !text)) {
+    throw new Error(`Prompt translation for ${lang} came back incomplete`);
+  }
+  return { prompts, proPrompts };
+}
 
 async function translateTextStream(openai, text, lang1, lang2, context, onDelta, { detected } = {}) {
   const userMessage = buildTranslationUserMessage(text, lang1, lang2, context, detected);
@@ -434,28 +493,69 @@ function writeTtsCache(key, buffer) {
   }
 }
 
-async function generateSpeechBuffer(openai, input, lang, voiceId = null, { pro = false } = {}) {
-  // The pro path is explicit and never falls back to another voice: if the
-  // PVC generation fails, the caller sees the error.
+// gpt-4o-mini-tts silently truncates the audio of long inputs (it returns a
+// 200 with the end of the text missing — a known model bug). Keeping each
+// request short makes truncation very unlikely, and MP3 buffers concatenate
+// cleanly, so long texts are synthesized as several chunks in parallel.
+const OPENAI_TTS_CHUNK_CHARS = 500;
+const OPENAI_TTS_SENTENCE_ENDS = ['. ', '! ', '? ', '。', '！', '？', '\n'];
+
+function lastSpeechBoundary(window) {
+  let best = -1;
+  for (const mark of OPENAI_TTS_SENTENCE_ENDS) {
+    const idx = window.lastIndexOf(mark);
+    if (idx >= 0) best = Math.max(best, idx + mark.length);
+  }
+  return best;
+}
+
+function splitForOpenAiTts(text) {
+  const chunks = [];
+  let rest = text.trim();
+  while (rest.length > OPENAI_TTS_CHUNK_CHARS) {
+    const window = rest.slice(0, OPENAI_TTS_CHUNK_CHARS);
+    let cut = lastSpeechBoundary(window);
+    if (cut < OPENAI_TTS_CHUNK_CHARS * 0.4) {
+      // No usable sentence end (e.g. Thai, which separates phrases with
+      // plain spaces): fall back to the last space, then to a hard cut.
+      const space = window.lastIndexOf(' ');
+      cut = space >= OPENAI_TTS_CHUNK_CHARS * 0.4 ? space + 1 : OPENAI_TTS_CHUNK_CHARS;
+    }
+    chunks.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) chunks.push(rest);
+  return chunks;
+}
+
+async function generateSpeechBuffer(openai, input, lang, voiceId = null, { pro = false, v3 = false } = {}) {
+  // The pro and v3 paths are explicit and never fall back to another voice:
+  // if the generation fails, the caller sees the error.
   if (pro) {
     return generateClonedSpeech(input, voiceId, lang, { pro: true });
+  }
+  if (v3) {
+    return generateClonedSpeech(input, voiceId, lang, { v3: true });
   }
 
   if (voiceId && isElevenLabsConfigured() && supportsClonedVoice(lang)) {
     return generateClonedSpeech(input, voiceId, lang);
   }
 
-  const speech = await withRetry(() =>
-    openai.audio.speech.create({
-      model: 'gpt-4o-mini-tts',
-      voice: 'nova',
-      input,
-      instructions: 'Speak at a natural, slightly brisk pace.',
-      response_format: 'mp3',
-    }),
-    2
-  );
-  return Buffer.from(await speech.arrayBuffer());
+  const chunks = splitForOpenAiTts(input);
+  const buffers = await Promise.all(chunks.map((chunk) =>
+    withRetry(() =>
+      openai.audio.speech.create({
+        model: 'gpt-4o-mini-tts',
+        voice: 'nova',
+        input: chunk,
+        instructions: 'Speak at a natural, slightly brisk pace.',
+        response_format: 'mp3',
+      }),
+      2
+    ).then(async (speech) => Buffer.from(await speech.arrayBuffer()))
+  ));
+  return buffers.length === 1 ? buffers[0] : Buffer.concat(buffers);
 }
 
 // Dedupes concurrent generations so a warm-up started at translation time
@@ -491,13 +591,13 @@ async function readTtsBlob(cacheKey) {
   }
 }
 
-function generateSpeech(openai, text, lang, voiceId = null, { pro = false } = {}) {
+function generateSpeech(openai, text, lang, voiceId = null, { pro = false, v3 = false } = {}) {
   const input = prepareTextForSpeech(text, lang);
   if (!input) {
     return Promise.reject(new Error('No speakable text'));
   }
 
-  const cacheKey = ttsCacheKey(input, lang, voiceId, pro ? 'pro' : 'fast');
+  const cacheKey = ttsCacheKey(input, lang, voiceId, pro ? 'pro' : v3 ? 'v3' : 'fast');
   const cached = readTtsCache(cacheKey);
   if (cached) return Promise.resolve(cached);
 
@@ -511,7 +611,7 @@ function generateSpeech(openai, text, lang, voiceId = null, { pro = false } = {}
       return blobHit;
     }
 
-    const buffer = await generateSpeechBuffer(openai, input, lang, voiceId, { pro });
+    const buffer = await generateSpeechBuffer(openai, input, lang, voiceId, { pro, v3 });
     writeTtsCache(cacheKey, buffer);
     persistTtsBlob(cacheKey, buffer);
     return buffer;
@@ -880,9 +980,9 @@ export function createApp() {
   });
 
   // Creates the PVC voice on ElevenLabs and uploads every collected sample.
-  // Verification (reading a captcha aloud) and training are finished in the
-  // ElevenLabs dashboard; once trained, the PRO path links the voice
-  // automatically via discoverProVoice.
+  // Verification (reading a captcha aloud) and training then continue inside
+  // the app via /api/voice/pro-captcha and /api/voice/pro-status — no
+  // ElevenLabs dashboard needed, so any user of this app can train a voice.
   app.post('/api/voice/pro-create', requireAppAuth, async (req, res) => {
     const slot = requireProfileSlot(req, res);
     if (slot == null) return;
@@ -942,8 +1042,138 @@ export function createApp() {
     }
   });
 
+  // In-app voice ownership verification: returns the captcha image (lines of
+  // text the voice owner must read aloud) for the pending PVC voice.
+  app.get('/api/voice/pro-captcha', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+
+    try {
+      const profile = await getVoiceProfile(req.user.id, slot);
+      if (!profile.pvcPendingVoiceId) {
+        return res.status(409).json({ error: 'Submit your samples first — there is no voice waiting for verification' });
+      }
+      const image = await getPvcCaptcha(profile.pvcPendingVoiceId);
+      res.json({ ok: true, image });
+    } catch (err) {
+      console.error('PVC captcha error:', err);
+      res.status(502).json({ error: err.message || 'Could not fetch the verification text' });
+    }
+  });
+
+  // Receives the user's recording of the captcha text, submits it to
+  // ElevenLabs and — if the owner is verified — starts training right away.
+  app.post('/api/voice/pro-captcha', requireAppAuth, upload.single('audio'), async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'No recording received' });
+    }
+
+    try {
+      const profile = await getVoiceProfile(req.user.id, slot);
+      if (!profile.pvcPendingVoiceId) {
+        return res.status(409).json({ error: 'Submit your samples first — there is no voice waiting for verification' });
+      }
+
+      await verifyPvcCaptcha(profile.pvcPendingVoiceId, {
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype || 'audio/webm',
+      });
+      await savePvcVerified(req.user.id, slot);
+      await trainPvcVoice(profile.pvcPendingVoiceId);
+
+      const saved = await getVoiceProfile(req.user.id, slot);
+      res.json({ ok: true, training: true, ...proSamplesState(saved) });
+    } catch (err) {
+      console.error('PVC verify error:', err);
+      res.status(502).json({ error: err.message || 'Verification failed — try reading the text again' });
+    }
+  });
+
+  // Training progress. Once ElevenLabs reports the voice as fine-tuned it is
+  // promoted to the profile's proVoiceId, which unlocks the PRO button.
+  app.get('/api/voice/pro-status', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+
+    try {
+      const profile = await getVoiceProfile(req.user.id, slot);
+      if (profile.proVoiceId) {
+        return res.json({ ok: true, state: 'ready', progress: 1 });
+      }
+      if (!profile.pvcPendingVoiceId) {
+        return res.json({ ok: true, state: 'none', progress: 0 });
+      }
+      if (!profile.pvcVerified) {
+        return res.json({ ok: true, state: 'needs_verification', progress: 0 });
+      }
+
+      const status = await getPvcTrainingStatus(profile.pvcPendingVoiceId);
+      if (status.state === 'fine_tuned') {
+        await saveProVoice(req.user.id, slot, profile.pvcPendingVoiceId);
+        return res.json({ ok: true, state: 'ready', progress: 1 });
+      }
+      res.json({ ok: true, state: status.state, progress: status.progress, message: status.message });
+    } catch (err) {
+      console.error('PVC status error:', err);
+      res.status(502).json({ error: err.message || 'Could not read training status' });
+    }
+  });
+
   app.get('/api/languages', requireAppAuth, (_req, res) => {
     res.json(getLanguagesList());
+  });
+
+  // Reading prompts for voice samples in any supported language. Spanish,
+  // Thai and English ship hand-written with the client; every other language
+  // is machine-translated from the English source texts on first request and
+  // cached persistently, so the translation cost is paid once per language.
+  app.get('/api/voice/prompts', requireAppAuth, async (req, res) => {
+    const lang = String(req.query.lang || 'en').toLowerCase().trim();
+    if (!LANGUAGE_NAMES[lang]) {
+      return res.status(400).json({ error: 'Unsupported language' });
+    }
+    if (lang === 'en') {
+      return res.json({ ok: true, lang, prompts: BASE_VOICE_PROMPTS_EN, proPrompts: BASE_PRO_VOICE_PROMPTS_EN });
+    }
+
+    const cached = voicePromptsCache.get(lang);
+    if (cached) {
+      return res.json({ ok: true, lang, ...cached });
+    }
+
+    try {
+      const persisted = await readText(voicePromptsStoreKey(lang));
+      if (persisted) {
+        const parsed = JSON.parse(persisted);
+        if (Array.isArray(parsed?.prompts) && Array.isArray(parsed?.proPrompts)) {
+          voicePromptsCache.set(lang, parsed);
+          return res.json({ ok: true, lang, ...parsed });
+        }
+      }
+
+      const openai = requireOpenAI(res);
+      if (!openai) return;
+
+      let pending = voicePromptsPending.get(lang);
+      if (!pending) {
+        pending = buildVoicePromptsForLang(openai, lang)
+          .finally(() => voicePromptsPending.delete(lang));
+        voicePromptsPending.set(lang, pending);
+      }
+      const data = await pending;
+
+      voicePromptsCache.set(lang, data);
+      const persist = writeText(voicePromptsStoreKey(lang), JSON.stringify(data))
+        .catch((err) => console.warn('Voice prompts persist failed:', err?.message));
+      waitUntil(persist);
+
+      res.json({ ok: true, lang, ...data });
+    } catch (err) {
+      console.error('Voice prompts error:', err);
+      res.status(502).json({ error: 'Could not prepare the reading texts for this language' });
+    }
   });
 
   app.post('/api/transcribe', requireAppAuth, converseRateLimit, upload.single('audio'), async (req, res) => {
@@ -1045,6 +1275,52 @@ export function createApp() {
     }
   });
 
+  // Rewrites the draft text with GPT before translating: simplify it, fix
+  // errors only, or shift it to a formal register. Always answers in the
+  // same language the text was written in.
+  app.post('/api/improve', requireAppAuth, converseRateLimit, async (req, res) => {
+    const openai = requireOpenAI(res);
+    if (!openai) return;
+
+    const text = String(req.body?.text || '').trim();
+    const mode = String(req.body?.mode || '').trim();
+    if (!text) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+    if (text.length > 8000) {
+      return res.status(400).json({ error: 'Text is too long to improve' });
+    }
+    const instruction = IMPROVE_PROMPTS[mode];
+    if (!instruction) {
+      return res.status(400).json({ error: 'Unknown improvement mode' });
+    }
+
+    try {
+      const completion = await withRetry(() =>
+        openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          temperature: 0.2,
+          max_tokens: TRANSLATION_MAX_TOKENS,
+          messages: [
+            {
+              role: 'system',
+              content: `${instruction} Always respond in the same language the text is written in. Return only the rewritten text, with no quotes, labels or commentary.`,
+            },
+            { role: 'user', content: text },
+          ],
+        })
+      );
+      const improved = completion.choices[0]?.message?.content?.trim();
+      if (!improved) {
+        return res.status(502).json({ error: 'The model returned an empty rewrite' });
+      }
+      res.json({ ok: true, text: improved, mode });
+    } catch (err) {
+      console.error('Improve error:', err);
+      res.status(500).json({ error: formatApiError(err) });
+    }
+  });
+
   app.post('/api/speak', requireAppAuth, speakRateLimit, async (req, res) => {
     const openai = requireOpenAI(res);
     if (!openai) return;
@@ -1085,6 +1361,28 @@ export function createApp() {
         res.set('Content-Type', 'audio/mpeg');
         res.set('Cache-Control', 'private, max-age=3600');
         res.set('X-Voice-Mode', 'pro');
+        return res.send(buffer);
+      }
+
+      // On-demand v3 audio: the user's instant clone on eleven_v3, the only
+      // model that speaks languages outside the flash set (e.g. Thai) in
+      // their voice. Slow, so it is never generated automatically.
+      if (req.body.quality === 'v3') {
+        if (!isElevenLabsConfigured()) {
+          return res.status(503).json({ error: 'Voice service not configured' });
+        }
+        if (!supportsV3OnlyVoice(langCode)) {
+          return res.status(400).json({ error: 'This language does not use the v3 voice' });
+        }
+        const v3VoiceId = resolveVoiceId(req.user, voiceProfile);
+        if (!v3VoiceId) {
+          return res.status(409).json({ error: 'Personal voice not ready — set up your voice profile first' });
+        }
+
+        const buffer = await generateSpeech(openai, text, langCode, v3VoiceId, { v3: true });
+        res.set('Content-Type', 'audio/mpeg');
+        res.set('Cache-Control', 'private, max-age=3600');
+        res.set('X-Voice-Mode', 'v3');
         return res.send(buffer);
       }
 
