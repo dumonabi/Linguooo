@@ -209,4 +209,32 @@ test.describe('Lingu.ooo', () => {
     expect(translateRequest?.lang1).toBe('es');
     expect(translateRequest?.lang2).toBe('th');
   });
+
+  test('dictated text is inserted at the caret position in the draft', async ({ page }) => {
+    await prepareApp(page);
+    const input = page.locator('#dictation-input');
+    await input.fill('uno dos');
+    // Place the caret right after "uno" before starting the recording.
+    await input.evaluate((ta) => {
+      ta.focus();
+      ta.setSelectionRange(3, 3);
+    });
+
+    await recordOnce(page, { translate: false });
+
+    // The mock transcript "hola" lands at the caret, not at the end.
+    await expect(input).toHaveValue('uno hola dos ');
+    // The caret follows the inserted text.
+    await expect.poll(() => input.evaluate((ta) => ta.selectionStart)).toBe('uno hola'.length);
+  });
+
+  test('dictating with the caret at the end still appends', async ({ page }) => {
+    await prepareApp(page);
+    const input = page.locator('#dictation-input');
+    await input.fill('uno dos');
+
+    await recordOnce(page, { translate: false });
+
+    await expect(input).toHaveValue('uno dos hola ');
+  });
 });

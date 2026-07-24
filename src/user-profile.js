@@ -775,10 +775,14 @@ const MESSAGE_TEXT_SCALE_KEY = 'lingo-message-text-scale';
 const MESSAGE_TEXT_SCALE_MIN = 0.8;
 const MESSAGE_TEXT_SCALE_MAX = 1.4;
 const MESSAGE_TEXT_SCALE_STEP = 0.1;
+// The compose box leading (--compose-leading) is tuned to match the message
+// line spacing rendered at this default scale.
+const MESSAGE_TEXT_SCALE_DEFAULT = 0.8;
 
 function readMessageTextScale() {
-  const raw = Number(readProfileValue(MESSAGE_TEXT_SCALE_KEY));
-  if (!Number.isFinite(raw)) return 1;
+  const stored = readProfileValue(MESSAGE_TEXT_SCALE_KEY);
+  const raw = Number(stored);
+  if (!stored || !Number.isFinite(raw)) return MESSAGE_TEXT_SCALE_DEFAULT;
   return Math.min(MESSAGE_TEXT_SCALE_MAX, Math.max(MESSAGE_TEXT_SCALE_MIN, raw));
 }
 

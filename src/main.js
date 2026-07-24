@@ -1627,21 +1627,24 @@ function shouldRefocusComposeInput(next) {
   return true;
 }
 
-function focusComposeInput({ moveCaretToEnd = false } = {}) {
+function focusComposeInput({ moveCaretToEnd = false, caretPos = null } = {}) {
   if (!dictationInputEl || state.isRecording || state.isProcessing || dictationInputEl.disabled) return;
   dictationInputEl.focus({ preventScroll: true });
-  if (moveCaretToEnd) {
+  if (caretPos != null) {
+    const pos = Math.min(caretPos, dictationInputEl.value.length);
+    dictationInputEl.setSelectionRange(pos, pos);
+  } else if (moveCaretToEnd) {
     const pos = dictationInputEl.value.length;
     dictationInputEl.setSelectionRange(pos, pos);
   }
   syncComposeCaret();
 }
 
-function scheduleComposeFocus({ moveCaretToEnd = false } = {}) {
+function scheduleComposeFocus({ moveCaretToEnd = false, caretPos = null } = {}) {
   syncComposeCaret();
-  const run = () => focusComposeInput({ moveCaretToEnd });
+  const run = () => focusComposeInput({ moveCaretToEnd, caretPos });
   requestAnimationFrame(run);
-  if (moveCaretToEnd) {
+  if (moveCaretToEnd || caretPos != null) {
     window.setTimeout(run, 80);
   }
 }
@@ -1675,11 +1678,54 @@ function showDraftPanel(text) {
   scrollComposeIntoView();
 }
 
+// Where dictated text should land in the draft: the caret position (or
+// selection) the user left in the textarea when the recording started.
+// Null means the caret was at the end, so the transcript is appended.
+let draftInsertRange = null;
+
+function captureDraftInsertRange() {
+  draftInsertRange = null;
+  const ta = dictationInputEl;
+  if (!ta || !ta.value) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  if (typeof start !== 'number' || typeof end !== 'number') return;
+  // A caret at (or past) the last non-space character means a plain append.
+  if (start >= ta.value.trimEnd().length) return;
+  draftInsertRange = { start, end };
+}
+
+function takeDraftInsertRange(value) {
+  const range = draftInsertRange;
+  draftInsertRange = null;
+  if (!range) return null;
+  const start = Math.max(0, Math.min(range.start, value.length));
+  const end = Math.max(start, Math.min(range.end, value.length));
+  if (start >= value.trimEnd().length) return null;
+  return { start, end };
+}
+
 function appendToDraft(text, { prefetch = true } = {}) {
   const addition = String(text ?? '').trim();
   if (!addition) return;
-  const current = dictationInputEl.value.trim();
-  const combined = current ? `${current} ${addition}` : addition;
+  const current = dictationInputEl.value;
+  const range = takeDraftInsertRange(current);
+
+  let combined;
+  let caretPos = null;
+  if (range) {
+    // Insert at the caret the user placed before recording, replacing any
+    // selected text and normalizing the surrounding spaces.
+    const before = current.slice(0, range.start).trimEnd();
+    const after = current.slice(range.end).trimStart();
+    const head = before ? `${before} ${addition}` : addition;
+    combined = after ? `${head} ${after}` : head;
+    caretPos = head.length;
+  } else {
+    const trimmed = current.trim();
+    combined = trimmed ? `${trimmed} ${addition}` : addition;
+  }
+
   showDraftPanel(combined);
   if (!dictationInputEl.value.endsWith(' ')) {
     dictationInputEl.value += ' ';
@@ -1687,7 +1733,7 @@ function appendToDraft(text, { prefetch = true } = {}) {
     resizeDictationInput();
   }
   if (prefetch) startDraftTranslationPrefetch(getDraftText());
-  scheduleComposeFocus({ moveCaretToEnd: true });
+  scheduleComposeFocus(caretPos != null ? { caretPos } : { moveCaretToEnd: true });
 }
 
 function clearPendingSourceRecording() {
@@ -2924,6 +2970,9 @@ async function beginRecording() {
   if (state.isProcessing || state.stoppingRecording || state.isRecording || isRecordingUiActive()) return;
 
   const sessionId = ++recordingSessionId;
+  // Remember where the caret sits so the transcript can be inserted there
+  // instead of always at the end of the draft.
+  captureDraftInsertRange();
   primeMicAudioOnGesture();
   stopDraftSpeech();
   abortActiveConverse();

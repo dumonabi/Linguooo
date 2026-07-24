@@ -40,11 +40,14 @@
        lines always fit and lines simply hold more characters. */
   --ui-text-size: calc(min(100vw, 100dvh) / 13.5);
   --ui-text-leading: 1.12;
-  /* Leading for text meant to be read at length (compose box, messages):
-     13.5 / 8 = 1.6875, so each line box measures min(100vw, 100dvh) / 8 —
-     8 lines of text span exactly the smaller screen dimension on any
-     screen shape. */
+  /* Leading for the message text: at the default 0.8 message scale its
+     rendered line boxes measure min(100vw, 100dvh) × 0.8 × 1.6875 / 13.5 =
+     one tenth of the smaller screen dimension. */
   --reading-leading: 1.6875;
+  /* The compose box keeps the full glyph size (24 characters across) but
+     matches the translation's rendered line spacing: 1.35 = 0.8 × 1.6875,
+     so its line boxes also measure min(100vw, 100dvh) / 10. */
+  --compose-leading: 1.35;
   /* User-adjustable message text size (A− / A+ in the profile panel). */
   --message-text-scale: 1;
 }
@@ -999,7 +1002,7 @@ html.user-profile-menu-open body {
   width: 100%;
   border: none;
   font: inherit;
-  line-height: var(--reading-leading);
+  line-height: var(--compose-leading);
   padding: 0.9rem 1rem 0.55rem;
 }
 
@@ -1066,7 +1069,7 @@ html.user-profile-menu-open body {
   color: var(--compose-text);
   font: inherit;
   font-size: inherit;
-  line-height: var(--reading-leading);
+  line-height: var(--compose-leading);
   letter-spacing: 0;
   white-space: pre;
   pointer-events: none;
@@ -1094,7 +1097,7 @@ html.user-profile-menu-open body {
   background: transparent;
   color: var(--compose-text);
   font: inherit;
-  line-height: var(--reading-leading);
+  line-height: var(--compose-leading);
   padding: 0.9rem 1rem 0.55rem;
   caret-color: transparent;
 }
