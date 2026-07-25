@@ -768,36 +768,6 @@ function getProfileState(user) {
   };
 }
 
-// ---- Message text size (A− / A+) ----
-// Scales only the conversation text via --message-text-scale; the rest of
-// the layout keeps its density-based size. Stored per device.
-const MESSAGE_TEXT_SCALE_KEY = 'lingo-message-text-scale';
-const MESSAGE_TEXT_SCALE_MIN = 0.8;
-const MESSAGE_TEXT_SCALE_MAX = 1.4;
-const MESSAGE_TEXT_SCALE_STEP = 0.1;
-// The compose box leading (--compose-leading) is tuned to match the message
-// line spacing rendered at this default scale.
-const MESSAGE_TEXT_SCALE_DEFAULT = 0.8;
-
-function readMessageTextScale() {
-  const stored = readProfileValue(MESSAGE_TEXT_SCALE_KEY);
-  const raw = Number(stored);
-  if (!stored || !Number.isFinite(raw)) return MESSAGE_TEXT_SCALE_DEFAULT;
-  return Math.min(MESSAGE_TEXT_SCALE_MAX, Math.max(MESSAGE_TEXT_SCALE_MIN, raw));
-}
-
-export function applyMessageTextScale() {
-  document.documentElement.style.setProperty('--message-text-scale', String(readMessageTextScale()));
-}
-
-function adjustMessageTextScale(delta) {
-  const next = Math.round((readMessageTextScale() + delta) * 10) / 10;
-  const clamped = Math.min(MESSAGE_TEXT_SCALE_MAX, Math.max(MESSAGE_TEXT_SCALE_MIN, next));
-  writeProfileValue(MESSAGE_TEXT_SCALE_KEY, String(clamped));
-  applyMessageTextScale();
-  toast(`${Math.round(clamped * 100)}%`);
-}
-
 // The recovery backup shown to users: the 12 numbers plus the compact
 // Base58 code on a second line. Falls back to the raw value for session
 // tokens that are not word phrases.
@@ -1438,20 +1408,6 @@ async function renderMenuContent() {
               title="${escapeHtml(ui.showRecoveryPhrase)}"
               aria-label="${escapeHtml(ui.showRecoveryPhrase)}"
             >${PROFILE_SHOW_SEED_ICON_SVG}</button>
-            <button
-              type="button"
-              class="user-profile-session-icon-btn user-profile-text-scale-btn"
-              id="user-profile-text-smaller"
-              title="${escapeHtml(ui.textSmaller)}"
-              aria-label="${escapeHtml(ui.textSmaller)}"
-            >A−</button>
-            <button
-              type="button"
-              class="user-profile-session-icon-btn user-profile-text-scale-btn"
-              id="user-profile-text-larger"
-              title="${escapeHtml(ui.textLarger)}"
-              aria-label="${escapeHtml(ui.textLarger)}"
-            >A+</button>
           </div>
           <span class="user-profile-session-spacer" aria-hidden="true"></span>
           <div class="user-profile-session-end">
@@ -1512,9 +1468,6 @@ async function renderMenuContent() {
   $('#user-profile-samples-btn', panel)?.addEventListener('click', () => setVoiceSamplesPageOpen(true));
   $('#user-profile-signout', panel)?.addEventListener('click', () => signOut());
   $('#user-profile-create-account', panel)?.addEventListener('click', () => void createAdminAccount(panel));
-  $('#user-profile-text-smaller', panel)?.addEventListener('click', () => adjustMessageTextScale(-MESSAGE_TEXT_SCALE_STEP));
-  $('#user-profile-text-larger', panel)?.addEventListener('click', () => adjustMessageTextScale(MESSAGE_TEXT_SCALE_STEP));
-
   const sessionRow = $('#user-profile-session-row', panel);
   const sessionToggle = $('#user-profile-session-toggle', panel);
   const recoveryToggle = $('#user-profile-recovery-toggle', panel);
@@ -2079,7 +2032,6 @@ export function initUserProfile(slotEl, { onChange, showToast } = {}) {
   if (!slotEl) return;
   onUserChange = onChange;
   showToastFn = showToast || (() => {});
-  applyMessageTextScale();
   rootEl = document.createElement('div');
   rootEl.className = 'user-profile';
   rootEl.innerHTML = `

@@ -40,16 +40,12 @@
        lines always fit and lines simply hold more characters. */
   --ui-text-size: calc(min(100vw, 100dvh) / 13.5);
   --ui-text-leading: 1.12;
-  /* Leading for the message text: at the default 0.8 message scale its
-     rendered line boxes measure min(100vw, 100dvh) × 0.8 × 1.6875 / 13.5 =
-     one tenth of the smaller screen dimension. */
+  /* One shared size for all text meant to be read at length — the compose
+     box (transcription) and the translated messages render identically.
+     Its line boxes measure 0.8 × 1.6875 × min(100vw, 100dvh) / 13.5 = one
+     tenth of the smaller screen dimension. */
+  --reading-text-size: calc(var(--ui-text-size) * 0.8);
   --reading-leading: 1.6875;
-  /* The compose box keeps the full glyph size (24 characters across) but
-     matches the translation's rendered line spacing: 1.35 = 0.8 × 1.6875,
-     so its line boxes also measure min(100vw, 100dvh) / 10. */
-  --compose-leading: 1.35;
-  /* User-adjustable message text size (A− / A+ in the profile panel). */
-  --message-text-scale: 1;
 }
 
 *,
@@ -178,7 +174,9 @@ html.user-profile-menu-open body {
   box-sizing: border-box;
   overflow: hidden;
   container-type: size;
-  --lang-bar-text-size: var(--ui-text-size);
+  /* Sized so at least 8 monospace characters (0.6em advance each, minus the
+     -0.04em tracking) always fit the rect width, however narrow the screen. */
+  --lang-bar-text-size: min(var(--ui-text-size), calc((100cqw - 0.7rem) / 4.6));
   transition:
     background 0.18s ease,
     border-color 0.18s ease;
@@ -481,7 +479,8 @@ html.user-profile-menu-open body {
   border-radius: 0;
   background: var(--surface);
   container-type: size;
-  --lang-bar-text-size: var(--ui-text-size);
+  /* At least 8 monospace characters always fit the rect width. */
+  --lang-bar-text-size: min(var(--ui-text-size), calc((100cqw - 0.7rem) / 4.6));
 }
 
 .lang-picker-square--empty .lang-picker-square-label {
@@ -536,7 +535,8 @@ html.user-profile-menu-open body {
 .lang-picker-bar-field .lang-picker-square,
 .lang-bar-rect-slot .lang-picker--in-bar .lang-picker-square {
   container-type: size;
-  --lang-bar-text-size: var(--ui-text-size);
+  /* At least 8 monospace characters always fit the rect width. */
+  --lang-bar-text-size: min(var(--ui-text-size), calc((100cqw - 0.7rem) / 4.6));
   --lang-bar-text-leading: 1.12;
   --lang-bar-text-pad-block: max(3px, calc(100cqh * 0.05));
   box-sizing: border-box;
@@ -958,6 +958,8 @@ html.user-profile-menu-open body {
 /* Compose box (Cursor-style input) */
 .compose-box {
   width: 100%;
+  /* Same glyph size as the translated messages. */
+  font-size: var(--reading-text-size);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
@@ -1002,7 +1004,7 @@ html.user-profile-menu-open body {
   width: 100%;
   border: none;
   font: inherit;
-  line-height: var(--compose-leading);
+  line-height: var(--reading-leading);
   padding: 0.9rem 1rem 0.55rem;
 }
 
@@ -1069,7 +1071,7 @@ html.user-profile-menu-open body {
   color: var(--compose-text);
   font: inherit;
   font-size: inherit;
-  line-height: var(--compose-leading);
+  line-height: var(--reading-leading);
   letter-spacing: 0;
   white-space: pre;
   pointer-events: none;
@@ -1097,7 +1099,7 @@ html.user-profile-menu-open body {
   background: transparent;
   color: var(--compose-text);
   font: inherit;
-  line-height: var(--compose-leading);
+  line-height: var(--reading-leading);
   padding: 0.9rem 1rem 0.55rem;
   caret-color: transparent;
 }
@@ -1551,9 +1553,7 @@ html.user-profile-menu-open body {
   gap: 0;
   min-height: 260px;
   background: #000000;
-  /* Message text follows the user's A− / A+ preference; the rest of the UI
-     keeps the density-based size. */
-  font-size: calc(var(--ui-text-size) * var(--message-text-scale));
+  font-size: var(--reading-text-size);
 }
 
 .translate-below-panel {
@@ -5115,16 +5115,6 @@ html.user-profile-menu-open body {
   color: var(--text);
   cursor: pointer;
   touch-action: manipulation;
-}
-
-/* A− / A+ message text size buttons in the session drawer. */
-.user-profile-text-scale-btn {
-  font: inherit;
-  font-size: calc(var(--ui-text-size) * 0.95);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--text);
-  white-space: nowrap;
 }
 
 .user-profile-session-icon-btn svg {

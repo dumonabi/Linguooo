@@ -72,8 +72,6 @@ const VOICE_UI = {
     proReadyNote: 'Tu voz PRO está lista — usa el botón PRO en cualquier traducción.',
     promptsLoading: 'Preparando los textos de lectura en tu idioma…',
     promptsLoadFailed: 'No se pudieron preparar los textos en este idioma — inténtalo de nuevo',
-    textSmaller: 'Texto más pequeño',
-    textLarger: 'Texto más grande',
   },
   th: {
     profileName: 'ชื่อ',
@@ -143,8 +141,6 @@ const VOICE_UI = {
     proReadyNote: 'เสียง PRO พร้อมแล้ว — ใช้ปุ่ม PRO ในคำแปลได้เลย',
     promptsLoading: 'กำลังเตรียมข้อความอ่านในภาษาของคุณ…',
     promptsLoadFailed: 'เตรียมข้อความในภาษานี้ไม่สำเร็จ — ลองอีกครั้ง',
-    textSmaller: 'ตัวอักษรเล็กลง',
-    textLarger: 'ตัวอักษรใหญ่ขึ้น',
   },
   en: {
     profileName: 'Name',
@@ -214,8 +210,6 @@ const VOICE_UI = {
     proReadyNote: 'Your PRO voice is ready — use the PRO button on any translation.',
     promptsLoading: 'Preparing the reading texts in your language…',
     promptsLoadFailed: 'Could not prepare the texts in this language — try again',
-    textSmaller: 'Smaller text',
-    textLarger: 'Larger text',
   },
 };
 
