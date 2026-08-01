@@ -466,11 +466,14 @@ function getCurrentProfileSlot() {
 function syncStoredUserVoiceState() {
   const user = getStoredUser();
   if (!user) return;
+  // Only overwrite the voice state when the profile has actually loaded —
+  // a failed/pending fetch must not wipe a previously ready voice (that
+  // would hide the PRO voice option for languages like Thai).
   const updated = {
     ...user,
-    voiceReady: voiceProfile?.voiceReady ?? false,
-    voiceSampleCount: voiceProfile?.sampleCount ?? 0,
-    voiceStatus: voiceProfile?.status ?? 'none',
+    voiceReady: voiceProfile ? Boolean(voiceProfile.voiceReady) : Boolean(user.voiceReady),
+    voiceSampleCount: voiceProfile ? (voiceProfile.sampleCount ?? 0) : (user.voiceSampleCount ?? 0),
+    voiceStatus: voiceProfile ? (voiceProfile.status ?? 'none') : (user.voiceStatus ?? 'none'),
     activeProfileSlot: getCurrentProfileSlot(),
   };
   setStoredUser(updated);

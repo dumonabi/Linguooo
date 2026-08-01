@@ -132,6 +132,52 @@ test('languages outside the flash set offer on-demand v3 audio in the user voice
   expect(speakRequests.some((body) => body.quality === 'pro')).toBe(false);
 });
 
+test('the v3 voice option still appears when the fast audio generation fails', async ({ page }) => {
+  // The PRO button generates its own audio on demand, so a broken fast
+  // (generic-voice) render must not hide the user's-voice option.
+  await setupApiMocks(page, {
+    user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
+    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, elevenlabsConfigured: true },
+    onConverse: () => ({
+      rawText: 'hola amigo',
+      detectedLanguage: 'es',
+      sourceText: 'hola amigo',
+      translatedText: 'สวัสดีเพื่อน',
+      targetLanguage: 'th',
+    }),
+  });
+
+  const speakRequests = [];
+  await page.route('**/api/speak', async (route) => {
+    const body = route.request().postDataJSON();
+    speakRequests.push(body);
+    if (body.quality === 'v3') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'audio/mpeg',
+        body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
+      });
+    }
+    // The fast generic-voice generation fails.
+    return route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'TTS failed' }),
+    });
+  });
+
+  await translateOnce(page);
+
+  const proBtn = page.locator('.message-card .pro-audio-btn');
+  await expect(proBtn).toBeVisible({ timeout: 8000 });
+  // Without the fast audio there is nothing to play or share.
+  await expect(page.locator('.message-card .listen-btn')).toBeHidden();
+
+  await proBtn.click();
+  await expect(proBtn).toHaveClass(/is-playing/, { timeout: 8000 });
+  expect(speakRequests.filter((body) => body.quality === 'v3').length).toBe(1);
+});
+
 test('a missing pro voice surfaces the server guidance instead of falling back', async ({ page }) => {
   await page.route('**/api/speak', async (route) => {
     const body = route.request().postDataJSON();

@@ -318,7 +318,12 @@ function hideAudioActions(message) {
 }
 
 function revealAudioActions(message) {
-  if (!message?.audioUrl) {
+  // The playback controls need the fast audio, but the PRO button generates
+  // its own audio on demand — it must appear even when the fast generation
+  // failed, so the user's voice stays reachable (e.g. v3 for Thai).
+  const hasAudio = Boolean(message?.audioUrl);
+  const premium = Boolean(message && premiumAudioQuality(message));
+  if (!hasAudio && !premium) {
     hideAudioActions(message);
     return;
   }
@@ -332,12 +337,17 @@ function revealAudioActions(message) {
 
   footer.classList.add('has-audio-actions');
   footer.removeAttribute('hidden');
-  playbackSlot?.removeAttribute('hidden');
-  shareAudioBtn?.removeAttribute('hidden');
-  card?.querySelector('.listen-btn')?.classList.add('is-ready');
-  shareAudioBtn?.classList.add('is-ready');
+  if (hasAudio) {
+    playbackSlot?.removeAttribute('hidden');
+    shareAudioBtn?.removeAttribute('hidden');
+    card?.querySelector('.listen-btn')?.classList.add('is-ready');
+    shareAudioBtn?.classList.add('is-ready');
+  } else {
+    playbackSlot?.setAttribute('hidden', '');
+    shareAudioBtn?.setAttribute('hidden', '');
+  }
   if (proBtn) {
-    if (premiumAudioQuality(message)) {
+    if (premium) {
       proBtn.removeAttribute('hidden');
       proBtn.classList.add('is-ready');
     } else {
@@ -355,7 +365,8 @@ function startBackgroundAudio(message) {
 
   void prefetchAudio(message).finally(() => {
     if (message.id !== state.latestMessageId) return;
-    if (message.audioUrl) revealAudioActions(message);
+    // Reveal even without the fast audio: the PRO button still applies.
+    revealAudioActions(message);
   });
 }
 
@@ -3241,9 +3252,11 @@ function createMessageCard(msg) {
   const hideTextActions = msg._streaming || msg._loading;
 
   const hasAudio = Boolean(msg.audioUrl);
-  const audioActionsClass = hasAudio ? ' has-audio-actions' : '';
-  const hideFooter = hideTextActions || !hasAudio;
-  const showProBtn = hasAudio && Boolean(premiumAudioQuality(msg));
+  // The PRO button generates its own audio, so it shows as soon as the
+  // translation exists — even if the fast audio is missing or failed.
+  const showProBtn = !hideTextActions && Boolean(premiumAudioQuality(msg));
+  const audioActionsClass = hasAudio || showProBtn ? ' has-audio-actions' : '';
+  const hideFooter = hideTextActions || (!hasAudio && !showProBtn);
 
   el.innerHTML = `
     <div class="message-bubble">
@@ -3285,8 +3298,8 @@ function createMessageCard(msg) {
   if (msg.audioUrl) {
     el.querySelector('.listen-btn')?.classList.add('is-ready');
     el.querySelector('.share-audio-btn')?.classList.add('is-ready');
-    if (showProBtn) el.querySelector('.pro-audio-btn')?.classList.add('is-ready');
   }
+  if (showProBtn) el.querySelector('.pro-audio-btn')?.classList.add('is-ready');
 
   syncListenBtnVoiceMode(msg);
 
