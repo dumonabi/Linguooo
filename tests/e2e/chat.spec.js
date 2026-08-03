@@ -78,6 +78,31 @@ test.describe('chat with contacts', () => {
     await expect(page.locator('#chat-thread')).toContainText('48 hours');
   });
 
+  test('tapping the active contact again lets you rename it', async ({ page }) => {
+    await prepareApp(page, { chat: { contacts: [ANA] } });
+
+    const anaSquare = page.locator('.contact-square', { hasText: 'Ana' });
+    await anaSquare.click();
+    await expect(anaSquare).toHaveClass(/is-active/);
+
+    // Second tap on the selected contact opens the rename dialog.
+    await anaSquare.click();
+    const overlay = page.locator('#chat-rename-overlay');
+    await expect(overlay).toBeVisible();
+    await expect(page.locator('#chat-rename-input')).toHaveValue('Ana');
+
+    await page.locator('#chat-rename-input').fill('Mami');
+    await page.locator('#chat-rename-save').click();
+
+    await expect(overlay).toBeHidden();
+    const renamed = page.locator('.contact-square', { hasText: 'Mami' });
+    await expect(renamed).toBeVisible();
+    await expect(renamed).toHaveClass(/is-active/);
+    // The send button and the empty thread pick up the new name too.
+    await expect(page.locator('#dictation-translate')).toHaveAttribute('title', 'Send to Mami');
+    await expect(page.locator('#chat-thread')).toContainText('No messages with Mami yet');
+  });
+
   test('the emoji button copies a smiley with the code hidden inside', async ({ page }) => {
     await resetClientState(page);
     await page.addInitScript(() => {

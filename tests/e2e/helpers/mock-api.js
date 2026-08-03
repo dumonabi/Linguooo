@@ -36,7 +36,9 @@ export async function setupApiMocks(page, options = {}) {
     userId: chatOptions.userId ?? 'test-user',
     // Codes that can be added as contacts, keyed by code.
     users: { Friend12: { id: 'contact-1', name: 'Ana' }, ...(chatOptions.users ?? {}) },
-    contacts: [...(chatOptions.contacts ?? [])],
+    // Cloned so a test that renames a contact never mutates a fixture
+    // object shared with other tests.
+    contacts: (chatOptions.contacts ?? []).map((c) => ({ ...c })),
     messages: [...(chatOptions.messages ?? [])],
     sendCount: 0,
     pushIncoming(msg) {
@@ -333,6 +335,31 @@ export async function setupApiMocks(page, options = {}) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ code: chat.code, userId: chat.userId, contacts }),
+      });
+    }
+
+    if (path.startsWith('/api/contacts/') && route.request().method() === 'PATCH') {
+      const targetId = decodeURIComponent(path.slice('/api/contacts/'.length));
+      let body = {};
+      try {
+        body = JSON.parse(route.request().postData() || '{}');
+      } catch {
+        body = {};
+      }
+      const entry = chat.contacts.find((c) => c.id === targetId);
+      if (!entry) {
+        return route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'Not one of your contacts' }),
+        });
+      }
+      const profileName = Object.values(chat.users).find((u) => u.id === targetId)?.name || entry.name;
+      entry.name = String(body.name || '').trim().slice(0, 24) || profileName;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, contact: { id: entry.id, name: entry.name, code: entry.code } }),
       });
     }
 

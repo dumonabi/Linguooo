@@ -23,6 +23,8 @@ const TRANSLATE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden=
 let stripEl = null;
 let threadEl = null;
 let overlayEl = null;
+let renameOverlayEl = null;
+let renameTarget = null; // contact being renamed
 
 let showToastFn = () => {};
 let onModeChangeFn = () => {};
@@ -89,12 +91,14 @@ export function initChat({ showToast, onModeChange } = {}) {
   stripEl = $('#contact-strip');
   threadEl = $('#chat-thread');
   overlayEl = $('#chat-add-overlay');
+  renameOverlayEl = $('#chat-rename-overlay');
   if (!stripEl || !threadEl) return;
 
   showToastFn = showToast || showToastFn;
   onModeChangeFn = onModeChange || onModeChangeFn;
 
   bindAddOverlay();
+  bindRenameOverlay();
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
@@ -155,6 +159,12 @@ async function refreshContacts() {
     myCode = data.code || myCode;
     myId = data.userId || myId;
     contacts = Array.isArray(data.contacts) ? data.contacts : [];
+    // Keep the active contact pointing at the fresh entry so renames
+    // (from this or another device) show up everywhere.
+    if (activeContact) {
+      const fresh = contacts.find((c) => c.id === activeContact.id);
+      if (fresh) activeContact = fresh;
+    }
     renderStrip();
   } catch { /* offline — keep the last known strip */ }
 }
@@ -201,18 +211,24 @@ function renderStrip() {
   stripEl.appendChild(direct);
 
   for (const contact of contacts) {
+    const isActive = activeContact?.id === contact.id;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'contact-square';
-    btn.classList.toggle('is-active', activeContact?.id === contact.id);
-    btn.setAttribute('aria-label', `Chat with ${contact.name}`);
-    btn.title = contact.name;
+    btn.classList.toggle('is-active', isActive);
+    btn.setAttribute('aria-label', isActive ? `Rename ${contact.name}` : `Chat with ${contact.name}`);
+    btn.title = isActive ? `${contact.name} — tap to rename` : contact.name;
     btn.innerHTML = `
       <span class="contact-square-initial">${escapeHtml(contact.name.slice(0, 1).toUpperCase())}</span>
       <span class="contact-square-name">${escapeHtml(contact.name.slice(0, 8))}</span>
       ${hasUnread(contact) ? '<span class="contact-square-unread" aria-hidden="true"></span>' : ''}
     `;
-    btn.addEventListener('click', () => selectContact(contact));
+    // Tapping the selected contact again opens the rename dialog; tapping
+    // any other contact just switches the conversation.
+    btn.addEventListener('click', () => {
+      if (activeContact?.id === contact.id) openRenameOverlay(contact);
+      else selectContact(contact);
+    });
     stripEl.appendChild(btn);
   }
 
@@ -286,6 +302,64 @@ function bindAddOverlay() {
       if (submitBtn) submitBtn.disabled = false;
     }
   });
+}
+
+// ---- rename-contact overlay ----
+//
+// The alias lives only on your side (like the one chosen when adding);
+// leaving the field empty goes back to the contact's profile name.
+
+function bindRenameOverlay() {
+  if (!renameOverlayEl) return;
+  $('#chat-rename-close', renameOverlayEl)?.addEventListener('click', closeRenameOverlay);
+  renameOverlayEl.addEventListener('click', (event) => {
+    if (event.target === renameOverlayEl) closeRenameOverlay();
+  });
+
+  $('#chat-rename-form', renameOverlayEl)?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!renameTarget) return;
+    const input = $('#chat-rename-input', renameOverlayEl);
+    const name = input?.value.trim() || '';
+    const saveBtn = $('#chat-rename-save', renameOverlayEl);
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      const res = await apiFetch(`/api/contacts/${encodeURIComponent(renameTarget.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Could not rename contact');
+      await refreshContacts();
+      closeRenameOverlay();
+      // The "Send to X" button and the empty-thread text carry the name too.
+      if (activeContact?.id === data.contact?.id) {
+        onModeChangeFn(activeContact);
+        renderThread();
+      }
+      showToastFn(`Saved as ${data.contact?.name || 'Contact'}`);
+    } catch (err) {
+      showToastFn(err.message || 'Could not rename contact');
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  });
+}
+
+function openRenameOverlay(contact) {
+  if (!renameOverlayEl || !contact) return;
+  renameTarget = contact;
+  const input = $('#chat-rename-input', renameOverlayEl);
+  if (input) input.value = contact.name || '';
+  renameOverlayEl.hidden = false;
+  input?.focus();
+  input?.select();
+}
+
+function closeRenameOverlay() {
+  if (renameOverlayEl) renameOverlayEl.hidden = true;
+  renameTarget = null;
 }
 
 function openAddOverlay() {

@@ -36,6 +36,7 @@ import {
   isContact,
   lastMessageInfo,
   normalizeContactCode,
+  setContactAlias,
 } from './chat-store.js';
 import {
   getProfileSettings,
@@ -1385,6 +1386,27 @@ export function createApp() {
       console.error('Add contact error:', err);
       const status = err.code === 'CONTACT_LIMIT' ? 400 : 500;
       res.status(status).json({ error: err.message || 'Could not add contact' });
+    }
+  });
+
+  // Rename a contact for the caller only. An empty name reverts to the
+  // contact's profile name.
+  app.patch('/api/contacts/:id', requireAppAuth, async (req, res) => {
+    const targetId = String(req.params.id || '').trim();
+    const alias = String(req.body?.name || '').trim().slice(0, 24) || null;
+    try {
+      const ok = await setContactAlias(req.user.id, targetId, alias);
+      if (!ok) {
+        return res.status(404).json({ error: 'Not one of your contacts' });
+      }
+      const user = await getUserById(targetId);
+      res.json({
+        ok: true,
+        contact: { id: targetId, name: alias || user?.name || 'Contact', code: contactCodeForUser(targetId) },
+      });
+    } catch (err) {
+      console.error('Rename contact error:', err);
+      res.status(500).json({ error: 'Could not rename contact' });
     }
   });
 

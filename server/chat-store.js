@@ -131,6 +131,22 @@ export async function addContactPair(userId, otherId, alias = null) {
   await addOneDirection(otherId, userId);
 }
 
+// Renames a contact for this user only. An empty alias clears the custom
+// name so the contact's profile name shows again. Returns false when the
+// contact does not exist.
+export async function setContactAlias(userId, otherId, alias) {
+  const contacts = await readContacts(userId);
+  const index = contacts.findIndex((entry) => entry.id === otherId);
+  if (index < 0) return false;
+  const entry = { ...contacts[index] };
+  if (alias) entry.alias = alias;
+  else delete entry.alias;
+  const next = [...contacts];
+  next[index] = entry;
+  await writeContacts(userId, next);
+  return true;
+}
+
 // ---- Conversations ----
 
 function conversationKey(a, b) {
