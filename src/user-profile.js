@@ -1,5 +1,6 @@
 import { apiFetch, clearAuthSession, fetchCurrentUser, getAuthToken, getRecoveryPhrase, getStoredUser, setStoredUser } from './auth.js';
-import { phraseToBase58, phraseToNumbers } from './seed-input-extras.js';
+import { phraseToBase58 } from './seed-input-extras.js';
+import { phraseToEmoji, playSeedSound, seedQrDataUrl } from './seed-share.js';
 import { createLangPicker, createCollapsibleNumberedSquareGrid, hideAllLangPickerCarets } from './lang-picker.js';
 import {
   addProfileSlot,
@@ -771,14 +772,11 @@ function getProfileState(user) {
   };
 }
 
-// The recovery backup shown to users: the 12 numbers plus the compact
-// Base58 code on a second line. Falls back to the raw value for session
-// tokens that are not word phrases.
+// The recovery backup shown to users: only the compact Base58 code — the
+// words and their numbers never appear in the UI. Falls back to the raw
+// value for session tokens that are not word phrases.
 function formatRecoveryBackup(phrase) {
-  const numbers = phraseToNumbers(phrase);
-  if (!numbers) return phrase;
-  const code = phraseToBase58(phrase);
-  return code ? `${numbers}\n${code}` : numbers;
+  return phraseToBase58(phrase) || phrase;
 }
 
 // The PVC pipeline step the pro samples page is currently in.
@@ -1454,6 +1452,20 @@ async function renderMenuContent() {
           hidden
         >${PROFILE_COPY_ICON_SVG}</button>
       </div>
+      <div class="auth-share-row user-profile-share-row" id="user-profile-share-row" hidden>
+        <button type="button" class="auth-input-tool auth-share-btn" id="user-profile-share-qr" aria-label="Show as QR code" title="Show as QR code" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/>
+          </svg>
+        </button>
+        <button type="button" class="auth-input-tool auth-share-btn" id="user-profile-share-sound" aria-label="Play as sound" title="Play as sound">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+          </svg>
+        </button>
+        <button type="button" class="auth-input-tool auth-share-btn auth-share-emoji" id="user-profile-share-emoji" aria-label="Copy the code hidden in an emoji" title="Copy as emoji">&#x1F60A;</button>
+      </div>
+      <img class="auth-reveal-qr user-profile-share-qr-img" id="user-profile-share-qr-img" alt="Recovery phrase QR code" hidden />
       <div class="user-profile-recovery-wrap user-profile-admin-seed-wrap" id="user-profile-admin-seed-wrap" hidden>
         <p class="user-profile-recovery-text user-profile-admin-seed" id="user-profile-admin-seed"></p>
         <button
@@ -1482,6 +1494,22 @@ async function renderMenuContent() {
   const adminSeedCopyBtn = $('#user-profile-admin-seed-copy', panel);
   const cloneLangToggle = $('#user-profile-clone-languages-toggle', panel);
   const cloneLangText = $('#user-profile-clone-languages-text', panel);
+  const shareRow = $('#user-profile-share-row', panel);
+  const shareQrBtn = $('#user-profile-share-qr', panel);
+  const shareQrImg = $('#user-profile-share-qr-img', panel);
+  const shareSoundBtn = $('#user-profile-share-sound', panel);
+  const shareEmojiBtn = $('#user-profile-share-emoji', panel);
+
+  const hideShareRow = () => {
+    if (shareRow) shareRow.hidden = true;
+    if (shareQrImg) {
+      shareQrImg.hidden = true;
+      shareQrImg.removeAttribute('src');
+    }
+    shareQrBtn?.setAttribute('aria-expanded', 'false');
+  };
+
+  const currentRecoveryPhrase = () => getRecoveryPhrase(user.id) || getAuthToken() || '';
 
   const setCloneLanguagesOpen = (open) => {
     if (!cloneLangToggle || !cloneLangText) return;
@@ -1506,6 +1534,7 @@ async function renderMenuContent() {
       if (adminSeedWrap) adminSeedWrap.hidden = true;
       if (adminSeed) adminSeed.textContent = '';
       if (adminSeedCopyBtn) adminSeedCopyBtn.hidden = true;
+      hideShareRow();
       setRecoveryToggleUi(recoveryToggle, voiceLang, false);
     }
   });
@@ -1521,11 +1550,15 @@ async function renderMenuContent() {
       if (recoveryWrap) recoveryWrap.hidden = true;
       if (recoveryText) recoveryText.textContent = '';
       if (recoveryCopyBtn) recoveryCopyBtn.hidden = true;
+      hideShareRow();
       setRecoveryToggleUi(recoveryToggle, voiceLang, false);
       return;
     }
 
     const phrase = getRecoveryPhrase(user.id) || getAuthToken() || '';
+    // The side channels (QR/sound/emoji) carry the Base58 code, so they
+    // only apply when the stored value really is a word phrase.
+    if (shareRow) shareRow.hidden = !phraseToBase58(phrase);
     if (!phrase) {
       recoveryText.textContent = uiStrings.recoveryPhraseMissing;
       if (recoveryCopyBtn) recoveryCopyBtn.hidden = true;
@@ -1549,6 +1582,45 @@ async function renderMenuContent() {
       button: recoveryCopyBtn,
       ui: getVoiceUi(voiceLang),
     });
+  });
+
+  shareQrBtn?.addEventListener('click', async () => {
+    if (!shareQrImg) return;
+    if (!shareQrImg.hidden) {
+      shareQrImg.hidden = true;
+      shareQrBtn.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    try {
+      shareQrImg.src = await seedQrDataUrl(currentRecoveryPhrase());
+      shareQrImg.hidden = false;
+      shareQrBtn.setAttribute('aria-expanded', 'true');
+    } catch {
+      toast('Could not build the QR code');
+    }
+  });
+
+  shareSoundBtn?.addEventListener('click', async () => {
+    shareSoundBtn.disabled = true;
+    try {
+      await playSeedSound(currentRecoveryPhrase());
+    } catch {
+      toast('Could not play the sound code');
+    } finally {
+      shareSoundBtn.disabled = false;
+    }
+  });
+
+  shareEmojiBtn?.addEventListener('click', async () => {
+    const emoji = phraseToEmoji(currentRecoveryPhrase());
+    if (!emoji) return;
+    try {
+      await navigator.clipboard.writeText(emoji);
+      shareEmojiBtn.classList.add('is-action-ack');
+      window.setTimeout(() => shareEmojiBtn.classList.remove('is-action-ack'), 360);
+    } catch {
+      toast('Could not copy');
+    }
   });
 
   adminSeedCopyBtn?.addEventListener('click', () => {

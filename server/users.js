@@ -80,6 +80,8 @@ export function findUserByPassphraseSync(attempt) {
 
 export async function getUserById(id) {
   if (!id) return null;
+  // The bootstrap admin lives outside the stored registry.
+  if (id === getSuperUserRecord().id) return { ...getSuperUserRecord() };
   const stored = await findStoredUserById(id);
   return stored ? toPublicUser(stored) : null;
 }

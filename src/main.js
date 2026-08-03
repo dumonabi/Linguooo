@@ -23,6 +23,7 @@ import {
   updatePendingRecording,
 } from './pending-audio.js';
 import { bindKeepWarm } from './keep-warm.js';
+import { initChat, isChatMode, sendChatMessage } from './chat.js';
 import { registerPwa } from './pwa.js';
 
 const STORAGE_KEY = 'lingo-languages';
@@ -1049,6 +1050,18 @@ async function init() {
     },
   });
   void refreshUserSession();
+  initChat({
+    showToast,
+    // Chat mode repurposes the translate button as "send" and swaps the
+    // single translation card for the conversation thread.
+    onModeChange: (contact) => {
+      appEl.classList.toggle('chat-mode', Boolean(contact));
+      const label = contact ? `Send to ${contact.name}` : 'Translate';
+      dictationTranslateBtn.title = label;
+      dictationTranslateBtn.setAttribute('aria-label', label);
+      updateComposeState();
+    },
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       syncLanguageStateFromStorage();
@@ -2039,6 +2052,14 @@ async function translateDraft() {
   }
   if (state.isProcessing || state.isRecording || state.stoppingRecording) return;
 
+  // With a contact selected the button sends instead of translating: the
+  // server translates into lang2 (the sender's choice) and stores the
+  // message for the contact.
+  if (isChatMode()) {
+    await sendChatDraft(text);
+    return;
+  }
+
   stopDraftSpeech();
   abortActiveConverse();
   const controller = new AbortController();
@@ -2089,6 +2110,21 @@ async function translateDraft() {
     if (activeConverseController === controller) {
       activeConverseController = null;
     }
+    resetMicUI();
+  }
+}
+
+async function sendChatDraft(text) {
+  stopDraftSpeech();
+  cancelDraftTranslationPrefetch();
+  state.isProcessing = true;
+  updateComposeState();
+  try {
+    await sendChatMessage(text, getLanguagePair());
+    emptyDraftFields();
+  } catch (err) {
+    showToast(err.message || 'Could not send the message');
+  } finally {
     resetMicUI();
   }
 }
