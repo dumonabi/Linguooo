@@ -28,6 +28,10 @@
         </div>
       </section>
 
+      <section class="contact-bar" id="contact-bar" aria-label="Contacts">
+        <div class="contact-strip" id="contact-strip"></div>
+      </section>
+
       <section class="compose-box" id="compose-box">
         <div class="compose-input-wrap" id="compose-input-wrap">
           <textarea
@@ -190,12 +194,16 @@
             title="Translate"
             hidden
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <svg class="compose-translate-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75l1.13 3h2l-4.37-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" />
+            </svg>
+            <svg class="compose-send-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
             </svg>
           </button>
         </div>
         <div class="message-panel-body" id="current-message"></div>
+        <div class="chat-thread" id="chat-thread" hidden></div>
       </section>
 
       <div class="pending-banner" id="pending-banner" hidden>
@@ -209,6 +217,41 @@
 
     <div class="toast" id="toast" hidden></div>
 
+    <div class="chat-add-overlay" id="chat-add-overlay" hidden>
+      <div class="chat-add-card">
+        <button type="button" class="chat-add-close" id="chat-add-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+        <h2 class="chat-add-title">Add contact</h2>
+        <p class="chat-add-hint">Share your code so people can add you:</p>
+        <div class="chat-my-code-row">
+          <span class="chat-my-code" id="chat-my-code"></span>
+          <button type="button" class="chat-my-code-copy" id="chat-my-code-copy" aria-label="Copy my code" title="Copy my code">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+            </svg>
+          </button>
+          <button type="button" class="chat-my-code-copy chat-my-code-emoji" id="chat-my-code-emoji" aria-label="Copy my code hidden in an emoji" title="Copy as emoji">&#x1F60A;</button>
+        </div>
+        <p class="chat-add-hint">Or paste the code — or the emoji that hides it — of the person you want to chat with:</p>
+        <form id="chat-add-form" class="chat-add-form">
+          <input
+            type="text"
+            id="chat-add-code"
+            class="chat-add-input"
+            spellcheck="false"
+            autocomplete="off"
+            autocapitalize="off"
+            placeholder="Contact code or emoji…"
+            maxlength="40"
+          />
+          <button type="submit" class="chat-add-submit" id="chat-add-submit">Add</button>
+        </form>
+      </div>
+    </div>
+
     <div class="auth-gate" id="auth-gate" hidden>
       <div class="auth-card">
         <span class="auth-logo" id="auth-logo" aria-hidden="true"></span>
@@ -220,7 +263,7 @@
 
         <div id="auth-panel-signin">
           <h2>Welcome back</h2>
-          <p class="auth-hint">Enter your recovery phrase as its 12 numbers — you can type them, use the keypad below, paste the short Base58 code, or enter the 12 words instead.</p>
+          <p class="auth-hint">Paste your Base58 code — or scan its QR, fill the binary grid, or let this device listen to the sound code.</p>
           <form id="auth-signin-form">
             <div class="auth-passphrase-wrap">
               <textarea
@@ -230,41 +273,53 @@
                 spellcheck="false"
                 autocomplete="off"
                 autocapitalize="off"
-                placeholder="12 numbers, code or words …"
+                placeholder="Base58 code …"
                 required
               ></textarea>
               <div class="auth-input-tools">
                 <button
                   type="button"
+                  class="auth-input-tool auth-bin-toggle"
+                  id="auth-seed-binary-toggle"
+                  aria-label="Binary grid input"
+                  title="Binary grid input"
+                  aria-expanded="false"
+                ><span aria-hidden="true">1001</span></button>
+                <button
+                  type="button"
                   class="auth-input-tool"
-                  id="auth-seed-mic"
-                  aria-label="Dictate recovery phrase"
-                  title="Dictate recovery phrase"
-                  aria-pressed="false"
+                  id="auth-seed-qr-toggle"
+                  aria-label="Scan QR code"
+                  title="Scan QR code"
+                  aria-expanded="false"
                 >
                   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.91-3c-.49 0-.9.36-.98.85C16.52 14.2 14.47 16 12 16s-4.52-1.8-4.93-4.15c-.08-.49-.49-.85-.98-.85-.61 0-1.09.54-1 1.14.49 3 2.89 5.35 5.91 5.78V20c0 .55.45 1 1 1s1-.45 1-1v-2.03c3.02-.43 5.42-2.78 5.91-5.78.1-.6-.39-1.14-1-1.14z"/>
+                    <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/>
                   </svg>
                 </button>
                 <button
                   type="button"
                   class="auth-input-tool"
-                  id="auth-seed-numeric-toggle"
-                  aria-label="Number keypad input"
-                  title="Number keypad input"
-                  aria-expanded="false"
+                  id="auth-seed-sound"
+                  aria-label="Listen for a sound code"
+                  title="Listen for a sound code"
+                  aria-pressed="false"
                 >
                   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <circle cx="6" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="18" cy="5" r="2"/>
-                    <circle cx="6" cy="11" r="2"/><circle cx="12" cy="11" r="2"/><circle cx="18" cy="11" r="2"/>
-                    <circle cx="6" cy="17" r="2"/><circle cx="12" cy="17" r="2"/><circle cx="18" cy="17" r="2"/>
-                    <circle cx="12" cy="22" r="2"/>
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
                   </svg>
                 </button>
               </div>
-              <ul class="auth-word-list" id="auth-word-list" hidden role="listbox" aria-label="BIP39 words"></ul>
             </div>
-            <div class="auth-numeric" id="auth-seed-numeric" hidden></div>
+            <div class="auth-binary" id="auth-seed-binary" hidden></div>
+            <div class="auth-scan" id="auth-seed-scan" hidden>
+              <video class="auth-scan-video" id="auth-seed-scan-video" muted playsinline></video>
+              <label class="auth-scan-upload">
+                Or read the code from a photo
+                <input type="file" id="auth-seed-qr-file" accept="image/*" hidden />
+              </label>
+            </div>
+            <p class="auth-hint auth-tool-status" id="auth-tool-status" hidden></p>
             <button type="submit" class="auth-submit" id="auth-submit">Continue</button>
           </form>
         </div>
@@ -286,16 +341,8 @@
         </div>
 
         <div id="auth-recovery-reveal" hidden>
-          <h2>Save your phrase</h2>
-          <p class="auth-hint">Write these 12 numbers down — or save the short Base58 code below them, both work. We cannot show them again on a new device unless you saved them here.</p>
-          <div class="auth-mnemonic-block">
-            <p class="auth-mnemonic" id="auth-mnemonic-numbers"></p>
-            <button type="button" class="auth-copy-mnemonic" id="auth-copy-numbers" aria-label="Copy numbers" title="Copy numbers">
-              <svg class="auth-copy-mnemonic-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-              </svg>
-            </button>
-          </div>
+          <h2>Save your code</h2>
+          <p class="auth-hint">Save this Base58 code — it is the only way back in. We cannot show it again on a new device unless you saved it here.</p>
           <div class="auth-mnemonic-block" id="auth-mnemonic-code-block">
             <p class="auth-mnemonic" id="auth-mnemonic-code"></p>
             <button type="button" class="auth-copy-mnemonic" id="auth-copy-code" aria-label="Copy code" title="Copy code">
@@ -304,6 +351,20 @@
               </svg>
             </button>
           </div>
+          <div class="auth-share-row">
+            <button type="button" class="auth-input-tool auth-share-btn" id="auth-reveal-qr-btn" aria-label="Show as QR code" title="Show as QR code" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h3v3h-3v-3zm5 0h3v3h-3v-3zm-5 5h3v3h-3v-3zm5 0h3v3h-3v-3z"/>
+              </svg>
+            </button>
+            <button type="button" class="auth-input-tool auth-share-btn" id="auth-reveal-sound-btn" aria-label="Play as sound" title="Play as sound">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+              </svg>
+            </button>
+            <button type="button" class="auth-input-tool auth-share-btn auth-share-emoji" id="auth-reveal-emoji-btn" aria-label="Copy the code hidden in an emoji" title="Copy as emoji">&#x1F60A;</button>
+          </div>
+          <img class="auth-reveal-qr" id="auth-reveal-qr" alt="Recovery phrase QR code" hidden />
           <label class="auth-confirm-saved">
             <input type="checkbox" id="auth-saved-checkbox" />
             <span>I have saved my recovery phrase</span>
