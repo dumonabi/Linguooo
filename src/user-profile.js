@@ -473,6 +473,9 @@ function syncStoredUserVoiceState() {
   const updated = {
     ...user,
     voiceReady: voiceProfile ? Boolean(voiceProfile.voiceReady) : Boolean(user.voiceReady),
+    // Whether a Professional Voice Clone is trained for this profile — it
+    // decides if the premium audio button reads PRO or "my voice".
+    proVoiceReady: voiceProfile ? Boolean(voiceProfile.proVoiceReady) : Boolean(user.proVoiceReady),
     voiceSampleCount: voiceProfile ? (voiceProfile.sampleCount ?? 0) : (user.voiceSampleCount ?? 0),
     voiceStatus: voiceProfile ? (voiceProfile.status ?? 'none') : (user.voiceStatus ?? 'none'),
     activeProfileSlot: getCurrentProfileSlot(),

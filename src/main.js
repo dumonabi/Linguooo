@@ -134,6 +134,13 @@ function isPersonalVoiceReady() {
   return Boolean(getStoredUser()?.voiceReady);
 }
 
+// True only when a Professional Voice Clone (the 30-minute training) is
+// actually ready — the instant 90-second clone does not count here.
+function isProVoiceReady() {
+  if (state.user?.proVoiceReady) return true;
+  return Boolean(getStoredUser()?.proVoiceReady);
+}
+
 function speakModeForLang(lang) {
   if (!lang || !isPersonalVoiceReady()) return 'default';
   if (!supportsClonedVoice(lang)) return 'default';
@@ -144,15 +151,35 @@ function speakModeForMessage(msg) {
   return speakModeForLang(msg.targetLanguage);
 }
 
-// Which premium on-demand audio the PRO button offers for this message:
-// 'pro'  — Professional Voice Clone on multilingual v2 (flash-set languages)
+// Which premium on-demand audio the premium button offers for this message:
+// 'pro'  — Professional Voice Clone on multilingual v2 (flash-set languages);
+//          only offered when the PVC is actually trained — with just the
+//          instant clone the fast audio already speaks in the user's voice.
 // 'v3'   — instant clone on eleven_v3, for languages flash cannot clone
 //          (e.g. Thai); needs the user's voice profile
-// null   — no premium option for this language
+// null   — no premium option for this language/profile
 function premiumAudioQuality(msg) {
-  if (supportsProVoice(msg.targetLanguage)) return 'pro';
+  if (supportsProVoice(msg.targetLanguage) && isProVoiceReady()) return 'pro';
   if (supportsV3OnlyVoice(msg.targetLanguage) && isPersonalVoiceReady()) return 'v3';
   return null;
+}
+
+// The premium button face tells the truth about which voice it plays: "PRO"
+// for the trained Professional Voice Clone, a person-with-waves symbol for
+// the instant clone rendered on the slow v3 model (e.g. Thai).
+const MY_VOICE_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/><path d="M17.5 8.5c0 1.02-.31 1.96-.84 2.74l1.45 1.45C19 11.5 19.5 10.06 19.5 8.5s-.5-3-1.39-4.19l-1.45 1.45c.53.78.84 1.72.84 2.74z"/><path d="M20.56 2.44l-1.43 1.43C20.16 5.14 20.75 6.75 20.75 8.5s-.59 3.36-1.62 4.63l1.43 1.43C21.93 12.94 22.75 10.81 22.75 8.5s-.82-4.44-2.19-6.06z"/></svg>';
+
+function syncPremiumAudioButton(btn, quality) {
+  if (!btn || !quality) return;
+  if (quality === 'v3') {
+    btn.innerHTML = MY_VOICE_BTN_SVG;
+    btn.title = 'My voice (slower)';
+    btn.setAttribute('aria-label', 'Play in my voice (slower)');
+  } else {
+    btn.innerHTML = '<span class="pro-audio-label">PRO</span>';
+    btn.title = 'Pro voice';
+    btn.setAttribute('aria-label', 'Pro voice');
+  }
 }
 
 function syncMessageAudioCache(msg) {
@@ -323,7 +350,8 @@ function revealAudioActions(message) {
   // its own audio on demand — it must appear even when the fast generation
   // failed, so the user's voice stays reachable (e.g. v3 for Thai).
   const hasAudio = Boolean(message?.audioUrl);
-  const premium = Boolean(message && premiumAudioQuality(message));
+  const premiumQuality = message ? premiumAudioQuality(message) : null;
+  const premium = Boolean(premiumQuality);
   if (!hasAudio && !premium) {
     hideAudioActions(message);
     return;
@@ -349,6 +377,7 @@ function revealAudioActions(message) {
   }
   if (proBtn) {
     if (premium) {
+      syncPremiumAudioButton(proBtn, premiumQuality);
       proBtn.removeAttribute('hidden');
       proBtn.classList.add('is-ready');
     } else {
@@ -3288,9 +3317,10 @@ function createMessageCard(msg) {
   const hideTextActions = msg._streaming || msg._loading;
 
   const hasAudio = Boolean(msg.audioUrl);
-  // The PRO button generates its own audio, so it shows as soon as the
+  // The premium button generates its own audio, so it shows as soon as the
   // translation exists — even if the fast audio is missing or failed.
-  const showProBtn = !hideTextActions && Boolean(premiumAudioQuality(msg));
+  const premiumQuality = hideTextActions ? null : premiumAudioQuality(msg);
+  const showProBtn = Boolean(premiumQuality);
   const audioActionsClass = hasAudio || showProBtn ? ' has-audio-actions' : '';
   const hideFooter = hideTextActions || (!hasAudio && !showProBtn);
 
@@ -3335,7 +3365,11 @@ function createMessageCard(msg) {
     el.querySelector('.listen-btn')?.classList.add('is-ready');
     el.querySelector('.share-audio-btn')?.classList.add('is-ready');
   }
-  if (showProBtn) el.querySelector('.pro-audio-btn')?.classList.add('is-ready');
+  if (showProBtn) {
+    const premiumBtn = el.querySelector('.pro-audio-btn');
+    syncPremiumAudioButton(premiumBtn, premiumQuality);
+    premiumBtn?.classList.add('is-ready');
+  }
 
   syncListenBtnVoiceMode(msg);
 

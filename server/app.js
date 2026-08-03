@@ -1566,20 +1566,28 @@ export function createApp() {
         return res.send(buffer);
       }
 
+      // Fast path: always produce audio. If the cloned voice was requested
+      // but is missing on this slot, or its generation keeps failing, fall
+      // back to the default voice instead of erroring — otherwise a client/
+      // server mismatch leaves the translation with no audio at all. The
+      // premium (PRO / my-voice) buttons are the strict "my voice or an
+      // explanation" paths.
       const voiceId = resolveVoiceId(voiceOwner, voiceProfile);
-      const useClone = Boolean(voiceId) && supportsClonedVoice(langCode);
-
-      if (req.body.voiceMode === 'clone' && supportsClonedVoice(langCode) && !voiceId) {
-        return res.status(400).json({ error: 'Personal voice not ready — set up your voice profile first' });
-      }
+      let useClone = Boolean(voiceId) && supportsClonedVoice(langCode);
 
       let buffer;
       try {
         buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
       } catch {
-        // A shared warm-up promise may have died with a frozen serverless
-        // instance; retry once with a fresh generation.
-        buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
+        try {
+          // A shared warm-up promise may have died with a frozen serverless
+          // instance; retry once with a fresh generation.
+          buffer = await generateSpeech(openai, text, langCode, useClone ? voiceId : null);
+        } catch (err) {
+          if (!useClone) throw err;
+          useClone = false;
+          buffer = await generateSpeech(openai, text, langCode, null);
+        }
       }
       res.set('Content-Type', 'audio/mpeg');
       res.set('Cache-Control', 'private, max-age=3600');

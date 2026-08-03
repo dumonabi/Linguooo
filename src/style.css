@@ -1906,6 +1906,12 @@ html.user-profile-menu-open body {
   color: #04140a;
 }
 
+/* The instant-clone variant shows a person-with-waves symbol instead of the
+   PRO badge; while playing it lights up in the accent color. */
+.pro-audio-btn.is-playing svg {
+  color: var(--accent);
+}
+
 @media (hover: hover) {
   .message-footer-actions .pro-audio-btn:hover:not(:disabled) {
     color: #ecfdf5;
