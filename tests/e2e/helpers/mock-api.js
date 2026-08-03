@@ -308,13 +308,16 @@ export async function setupApiMocks(page, options = {}) {
             body: JSON.stringify({ error: 'No user found with that code' }),
           });
         }
+        // The alias picked when adding wins over the profile name, like the
+        // real server does.
+        const name = String(body.name || '').trim().slice(0, 24) || target.name;
         if (!chat.contacts.some((c) => c.id === target.id)) {
-          chat.contacts.push({ id: target.id, name: target.name, code: body.code });
+          chat.contacts.push({ id: target.id, name, code: body.code });
         }
         return route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ ok: true, contact: { id: target.id, name: target.name, code: body.code } }),
+          body: JSON.stringify({ ok: true, contact: { id: target.id, name, code: body.code } }),
         });
       }
       const contacts = chat.contacts.map((c) => {

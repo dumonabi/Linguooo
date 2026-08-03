@@ -61,6 +61,23 @@ test.describe('chat with contacts', () => {
     await expect(page.locator('#chat-thread')).toContainText('No messages with Ana yet');
   });
 
+  test('adding a contact with a name shows that name instead of the profile one', async ({ page }) => {
+    await prepareApp(page);
+
+    await page.locator('.contact-square-add').click();
+    await page.locator('#chat-add-code').fill('Friend12');
+    await page.locator('#chat-add-name').fill('Mamá');
+    await page.locator('#chat-add-submit').click();
+
+    await expect(page.locator('#chat-add-overlay')).toBeHidden();
+    const square = page.locator('.contact-square', { hasText: 'Mamá' });
+    await expect(square).toBeVisible();
+    await expect(square).toHaveClass(/is-active/);
+    await expect(page.locator('#chat-thread')).toContainText('No messages with Mamá yet');
+    // The 48-hour retention is announced in the empty thread.
+    await expect(page.locator('#chat-thread')).toContainText('48 hours');
+  });
+
   test('the emoji button copies a smiley with the code hidden inside', async ({ page }) => {
     await resetClientState(page);
     await page.addInitScript(() => {
@@ -107,7 +124,7 @@ test.describe('chat with contacts', () => {
     await expect(page.locator('#chat-add-overlay')).toBeVisible();
   });
 
-  test('sending a draft in chat mode posts the message translated to lang2', async ({ page }) => {
+  test('sending a draft in chat mode posts the message and renders the delivered text', async ({ page }) => {
     await prepareApp(page, { chat: { contacts: [ANA] } });
 
     await page.locator('.contact-square', { hasText: 'Ana' }).click();

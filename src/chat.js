@@ -2,10 +2,10 @@
 //
 // The strip above the compose box picks who you are writing to: the first
 // square is "translate only" (the classic mode, nothing is sent), the rest
-// are contacts added by their public code. Messages are translated at send
-// time into the language the SENDER picked (lang2), so the receiver reads —
-// and can listen to, in the sender's cloned voice — exactly what the sender
-// chose to deliver.
+// are contacts added by their public code (optionally under a chosen name).
+// Messages follow the language bar exactly like the translator: written in
+// one language of the pair, delivered in the other — and can be listened to
+// in the sender's cloned voice. The server keeps them for 48 hours only.
 
 import { $, escapeHtml } from './dom-utils.js';
 import { apiFetch, getStoredUser } from './auth.js';
@@ -124,9 +124,10 @@ export function activeChatContact() {
   return activeContact;
 }
 
-// Sends the current draft to the active contact. The server translates into
-// lang2 (the sender's choice) before storing, so what comes back is what the
-// receiver will see.
+// Sends the current draft to the active contact. The server applies the
+// language bar like the translator does — written in one language of the
+// pair, delivered in the other — so what comes back is what the receiver
+// will see.
 export async function sendChatMessage(text, { lang1, lang2 }) {
   if (!activeContact) throw new Error('No contact selected');
   const res = await apiFetch('/api/chat/send', {
@@ -256,21 +257,24 @@ function bindAddOverlay() {
   form?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const input = $('#chat-add-code', overlayEl);
+    const nameInput = $('#chat-add-name', overlayEl);
     const raw = input?.value.trim();
     if (!raw) return;
     // A pasted 😊 carries the code in invisible selectors — unwrap it.
     const code = decodeEmojiCode(raw) || raw;
+    const name = nameInput?.value.trim() || '';
     const submitBtn = $('#chat-add-submit', overlayEl);
     if (submitBtn) submitBtn.disabled = true;
     try {
       const res = await apiFetch('/api/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, name }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Could not add contact');
       if (input) input.value = '';
+      if (nameInput) nameInput.value = '';
       await refreshContacts();
       closeAddOverlay();
       const added = contacts.find((c) => c.id === data.contact?.id);
@@ -363,11 +367,11 @@ function renderThread({ stick = false } = {}) {
   const nearBottom = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 80;
 
   if (!messages.length) {
-    threadEl.innerHTML = `<p class="chat-thread-loading">No messages with ${escapeHtml(activeContact.name)} yet — say hi</p>`;
+    threadEl.innerHTML = `<p class="chat-thread-loading">No messages with ${escapeHtml(activeContact.name)} yet — say hi. Messages disappear after 48 hours.</p>`;
     return;
   }
 
-  threadEl.innerHTML = '';
+  threadEl.innerHTML = '<p class="chat-thread-note">Messages disappear after 48 hours</p>';
   for (const msg of messages) {
     const mine = msg.from === me;
     const item = document.createElement('div');

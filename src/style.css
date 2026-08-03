@@ -5748,3 +5748,26 @@ html.user-profile-menu-open body {
 .auth-bin-cell.is-on {
   color: #04140a;
 }
+
+/* Add-contact: the code and the optional name stack, the button spans below. */
+.chat-add-form {
+  flex-wrap: wrap;
+}
+
+.chat-add-input.chat-add-name {
+  flex: 1 1 100%;
+}
+
+.chat-add-footnote {
+  margin-top: 0.7rem;
+  opacity: 0.75;
+  font-size: 0.85rem;
+}
+
+.chat-thread-note {
+  margin: 0 0 0.4rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--accent-light);
+  opacity: 0.65;
+}

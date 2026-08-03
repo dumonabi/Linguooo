@@ -1350,7 +1350,8 @@ export function createApp() {
         const last = await lastMessageInfo(req.user.id, entry.id);
         contacts.push({
           id: user.id,
-          name: user.name,
+          // The alias chosen when adding the contact wins over the profile name.
+          name: entry.alias || user.name,
           code: contactCodeForUser(user.id),
           lastMessageId: last?.id ?? null,
           lastMessageFrom: last?.from ?? null,
@@ -1366,6 +1367,7 @@ export function createApp() {
 
   app.post('/api/contacts', requireAppAuth, async (req, res) => {
     const code = normalizeContactCode(req.body?.code);
+    const alias = String(req.body?.name || '').trim().slice(0, 24) || null;
     if (!code) {
       return res.status(400).json({ error: 'Invalid contact code' });
     }
@@ -1377,8 +1379,8 @@ export function createApp() {
       if (!target) {
         return res.status(404).json({ error: 'No user found with that code' });
       }
-      await addContactPair(req.user.id, target.id);
-      res.json({ ok: true, contact: { id: target.id, name: target.name, code } });
+      await addContactPair(req.user.id, target.id, alias);
+      res.json({ ok: true, contact: { id: target.id, name: alias || target.name, code } });
     } catch (err) {
       console.error('Add contact error:', err);
       const status = err.code === 'CONTACT_LIMIT' ? 400 : 500;
@@ -1414,9 +1416,12 @@ export function createApp() {
       }, { detected: preDetected });
       const t = finalizeTranslation(rawText, accumulated, lang1, lang2, preDetected);
 
-      // The message is always delivered in lang2 — the language the sender
-      // selected. If they already wrote in lang2, deliver it as written.
-      const deliveredText = t.detectedLanguage === lang2 ? t.sourceText : t.translatedText;
+      // Same rule as the translator above the chat: the message is delivered
+      // in the OTHER language of the pair — writing in lang1 delivers lang2
+      // and writing in lang2 delivers lang1 (undetected text targets lang1,
+      // mirroring buildTranslationUserMessage).
+      const deliveredLang = t.detectedLanguage === lang1 ? lang2 : lang1;
+      const deliveredText = t.translatedText;
       if (!deliveredText?.trim()) {
         return res.status(502).json({ error: 'Translation failed — try again' });
       }
@@ -1427,7 +1432,7 @@ export function createApp() {
         text: deliveredText,
         sourceText: t.sourceText,
         sourceLang: t.detectedLanguage,
-        targetLang: lang2,
+        targetLang: deliveredLang,
       });
       res.json({ ok: true, message });
     } catch (err) {

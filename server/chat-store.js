@@ -15,6 +15,9 @@ const CONTACTS_PREFIX = 'chat/contacts';
 const CONVERSATIONS_PREFIX = 'chat/conversations';
 const MAX_STORED_MESSAGES = 200;
 const MAX_CONTACTS = 50;
+// Chat messages are ephemeral: anything older than 48 hours is dropped on
+// read and permanently removed on the next write to that conversation.
+const MESSAGE_TTL_MS = 48 * 60 * 60 * 1000;
 
 // Short caches so chat polling does not hammer Blob storage. Per-instance,
 // which is fine: writes update the cache in place.
@@ -106,7 +109,7 @@ export async function isContact(userId, otherId) {
   return contacts.some((entry) => entry.id === otherId);
 }
 
-async function addOneDirection(userId, otherId) {
+async function addOneDirection(userId, otherId, alias = null) {
   const contacts = await readContacts(userId);
   if (contacts.some((entry) => entry.id === otherId)) return false;
   if (contacts.length >= MAX_CONTACTS) {
@@ -114,14 +117,17 @@ async function addOneDirection(userId, otherId) {
     err.code = 'CONTACT_LIMIT';
     throw err;
   }
-  await writeContacts(userId, [...contacts, { id: otherId, addedAt: Date.now() }]);
+  const entry = { id: otherId, addedAt: Date.now() };
+  if (alias) entry.alias = alias;
+  await writeContacts(userId, [...contacts, entry]);
   return true;
 }
 
 // Mutual: adding someone also makes you visible on their side so they can
-// reply without exchanging codes twice.
-export async function addContactPair(userId, otherId) {
-  await addOneDirection(userId, otherId);
+// reply without exchanging codes twice. The alias is private to the adder —
+// the other side sees the adder's real profile name.
+export async function addContactPair(userId, otherId, alias = null) {
+  await addOneDirection(userId, otherId, alias);
   await addOneDirection(otherId, userId);
 }
 
@@ -132,6 +138,11 @@ function conversationKey(a, b) {
   return `${CONVERSATIONS_PREFIX}/${pair.join('~')}.json`;
 }
 
+function pruneExpired(messages) {
+  const cutoff = Date.now() - MESSAGE_TTL_MS;
+  return messages.filter((msg) => (msg.createdAt || 0) >= cutoff);
+}
+
 async function readConversation(a, b) {
   const key = conversationKey(a, b);
   const cached = conversationCache.get(key);
@@ -140,7 +151,9 @@ async function readConversation(a, b) {
   try {
     const raw = await readText(key);
     const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && Array.isArray(parsed.messages)) value = parsed;
+    if (parsed && Array.isArray(parsed.messages)) {
+      value = { ...parsed, messages: pruneExpired(parsed.messages) };
+    }
   } catch {
     value = { messages: [] };
   }
@@ -166,7 +179,7 @@ export async function appendChatMessage({ from, to, text, sourceText, sourceLang
     targetLang: targetLang || null,
     createdAt: Date.now(),
   };
-  const messages = [...conversation.messages, message].slice(-MAX_STORED_MESSAGES);
+  const messages = [...pruneExpired(conversation.messages), message].slice(-MAX_STORED_MESSAGES);
   await writeConversation(from, to, { messages });
   return message;
 }
