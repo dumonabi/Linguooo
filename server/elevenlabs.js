@@ -1,6 +1,7 @@
 import {
   ELEVEN_MODEL_FLASH,
   ELEVEN_MODEL_V2,
+  ELEVEN_MODEL_V3,
   resolveCloneVoiceModel,
   toElevenLabsLanguageCode,
 } from './elevenlabs-languages.js';
