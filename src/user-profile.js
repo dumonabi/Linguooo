@@ -11,7 +11,7 @@ import {
 } from './profile-slots.js';
 import { $, escapeHtml } from './dom-utils.js';
 import { createMicWave } from './mic-wave.js';
-import { buildRecordingBlob, getRecordingMimeType, isIosDevice } from './media-utils.js';
+import { buildRecordingBlob, getRecordingMimeType } from './media-utils.js';
 import { formatCloneVoiceLanguageList } from './elevenlabs-languages.js';
 import { loadLanguagesList } from './languages-service.js';
 import {
@@ -1809,10 +1809,20 @@ async function startVoiceSampleRecording() {
     return;
   }
 
+  // Resume the wave's AudioContext inside the tap gesture, before any await:
+  // on iOS a resume() issued later is often ignored.
+  profileMicWave.primeMicAudioOnGesture();
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
     });
+    // The wave meter is set up BEFORE the recorder starts, like the dictation
+    // flow: on first use iOS may close and recreate the AudioContext to get
+    // it running, and doing that mid-recording can starve the MediaRecorder
+    // (bars moving but zero bytes captured — "No audio captured").
+    profileMicWave.prepareMicMeter(stream);
+
     const mimeType = getRecordingMimeType();
     // Pro takes can run for many minutes, so use a low bitrate to stay
     // under the serverless upload size limit.
@@ -1835,9 +1845,10 @@ async function startVoiceSampleRecording() {
       startedAt: Date.now(),
     };
 
-    recorder.start(isIosDevice() ? undefined : 250);
-    profileMicWave.primeMicAudioOnGesture();
-    profileMicWave.prepareMicMeter(stream);
+    // 250ms timeslice on every platform (iOS included, again like dictation):
+    // chunks accumulate while recording instead of arriving as one packet
+    // around stop(), which Safari sometimes delivers too late or not at all.
+    recorder.start(250);
     await renderActiveProfileUi();
   } catch {
     toast('Microphone access is required to record voice samples');
