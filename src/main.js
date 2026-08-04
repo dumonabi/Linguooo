@@ -368,11 +368,16 @@ function revealAudioActions(message) {
   footer.removeAttribute('hidden');
   if (hasAudio) {
     playbackSlot?.removeAttribute('hidden');
-    shareAudioBtn?.removeAttribute('hidden');
     card?.querySelector('.listen-btn')?.classList.add('is-ready');
-    shareAudioBtn?.classList.add('is-ready');
   } else {
     playbackSlot?.setAttribute('hidden', '');
+  }
+  // Sharing prefers the premium (own-voice) render, so the share button also
+  // works when only the premium option exists and the fast audio failed.
+  if (hasAudio || premium) {
+    shareAudioBtn?.removeAttribute('hidden');
+    shareAudioBtn?.classList.add('is-ready');
+  } else {
     shareAudioBtn?.setAttribute('hidden', '');
   }
   if (proBtn) {
@@ -862,6 +867,23 @@ function stopProPlayback() {
   btn?.classList.remove('is-playing', 'is-loading');
 }
 
+// Fetches (once) and caches the premium render of this message in the user's
+// own voice: the trained PVC, or the instant clone on v3 for languages like
+// Thai. Returns null when no premium option applies to this message.
+async function ensurePremiumAudioUrl(msg) {
+  const quality = premiumAudioQuality(msg);
+  if (!quality) return null;
+  if (!msg._proAudioUrl) {
+    const controller = new AbortController();
+    const blob = await fetchSpeakBlob(msg, msg.translated, controller, {
+      attempts: 1,
+      quality,
+    });
+    msg._proAudioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(blob));
+  }
+  return msg._proAudioUrl;
+}
+
 // On-demand Professional Voice Clone audio for this exact text. Fetched only
 // when the button is pressed (PVC on multilingual v2 is slower and pricier),
 // cached on the message, and completely separate from the fast audio.
@@ -880,16 +902,10 @@ async function toggleProAudio(msg, btn) {
   btn?.classList.add('is-loading');
 
   try {
-    if (!msg._proAudioUrl) {
-      const controller = new AbortController();
-      const blob = await fetchSpeakBlob(msg, msg.translated, controller, {
-        attempts: 1,
-        quality: premiumAudioQuality(msg) || 'pro',
-      });
-      msg._proAudioUrl = trackMessageAudioUrl(msg, URL.createObjectURL(blob));
-    }
+    const premiumUrl = await ensurePremiumAudioUrl(msg);
+    if (!premiumUrl) return;
 
-    const audio = createPlaybackAudio(msg._proAudioUrl);
+    const audio = createPlaybackAudio(premiumUrl);
     proPlayback = { audio, messageId: msg.id };
     audio.onended = () => {
       if (proPlayback?.audio === audio) stopProPlayback();
@@ -3262,19 +3278,33 @@ async function shareClonedAudio(msg, btn) {
   if (btn) {
     btn.dataset.busy = '1';
     btn.disabled = true;
+    btn.classList.add('is-loading');
   }
 
   try {
-    if (!msg.audioUrl) {
-      await loadMessageAudio(msg);
+    // Share the user's own voice whenever possible: the trained PVC or, for
+    // v3-only languages (e.g. Thai), the instant clone. The generic fast
+    // audio only ships when no personal render is available.
+    let blob = null;
+    try {
+      const premiumUrl = await ensurePremiumAudioUrl(msg);
+      if (premiumUrl) blob = await blobFromAudioUrl(premiumUrl);
+    } catch {
+      // Premium render failed — fall back to the fast audio below.
     }
-    if (msg._audioPartial && msg._audioTailPromise) {
-      await withTimeout(msg._audioTailPromise, 30000, 'Audio not ready — try again');
-    }
-    if (!msg.audioUrl || msg._audioPartial) throw new Error('Audio not ready — try again');
-    revealAudioActions(msg);
 
-    const blob = await blobFromAudioUrl(msg.audioUrl);
+    if (!blob) {
+      if (!msg.audioUrl) {
+        await loadMessageAudio(msg);
+      }
+      if (msg._audioPartial && msg._audioTailPromise) {
+        await withTimeout(msg._audioTailPromise, 30000, 'Audio not ready — try again');
+      }
+      if (!msg.audioUrl || msg._audioPartial) throw new Error('Audio not ready — try again');
+      revealAudioActions(msg);
+      blob = await blobFromAudioUrl(msg.audioUrl);
+    }
+
     const filename = `lingu-translation-${Date.now()}.mp3`;
     const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
 
@@ -3295,6 +3325,7 @@ async function shareClonedAudio(msg, btn) {
   } finally {
     if (btn) {
       btn.disabled = false;
+      btn.classList.remove('is-loading');
       delete btn.dataset.busy;
       releaseActionButtonFocus(btn);
     }
@@ -3354,7 +3385,7 @@ function createMessageCard(msg) {
             <span class="playback-side-spacer"></span>
           </div>
         </div>
-        <button type="button" class="icon-btn share-audio-btn share-audio-btn-end"${hasAudio ? '' : ' hidden'} title="Share audio" aria-label="Share audio">
+        <button type="button" class="icon-btn share-audio-btn share-audio-btn-end"${hasAudio || showProBtn ? '' : ' hidden'} title="Share audio" aria-label="Share audio">
           ${SHARE_AUDIO_BTN_SVG}
         </button>
       </div>
@@ -3363,6 +3394,8 @@ function createMessageCard(msg) {
 
   if (msg.audioUrl) {
     el.querySelector('.listen-btn')?.classList.add('is-ready');
+  }
+  if (msg.audioUrl || showProBtn) {
     el.querySelector('.share-audio-btn')?.classList.add('is-ready');
   }
   if (showProBtn) {

@@ -210,6 +210,83 @@ test('the v3 voice option still appears when the fast audio generation fails', a
   expect(speakRequests.filter((body) => body.quality === 'v3').length).toBe(1);
 });
 
+test('sharing audio prefers the own-voice render over the generic fast audio', async ({ page }) => {
+  // Thai + instant clone: the share button must ship the v3 (my voice)
+  // render, not the generic fast audio.
+  await setupApiMocks(page, {
+    user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
+    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, elevenlabsConfigured: true },
+    onConverse: () => ({
+      rawText: 'hola amigo',
+      detectedLanguage: 'es',
+      sourceText: 'hola amigo',
+      translatedText: 'สวัสดีเพื่อน',
+      targetLanguage: 'th',
+    }),
+  });
+
+  await page.addInitScript(() => {
+    window.__sharedFiles = [];
+    navigator.share = (data) => {
+      window.__sharedFiles.push((data.files || []).map((f) => f.name));
+      return Promise.resolve();
+    };
+    navigator.canShare = () => true;
+  });
+
+  const speakRequests = [];
+  await page.route('**/api/speak', async (route) => {
+    speakRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
+    });
+  });
+
+  await translateOnce(page);
+
+  const shareBtn = page.locator('.message-card .share-audio-btn');
+  await expect(shareBtn).toBeVisible({ timeout: 8000 });
+  await shareBtn.click();
+
+  await expect.poll(async () => page.evaluate(() => window.__sharedFiles.length)).toBe(1);
+  const v3Requests = speakRequests.filter((body) => body.quality === 'v3');
+  expect(v3Requests.length).toBe(1);
+  expect(v3Requests[0].text).toBe('สวัสดีเพื่อน');
+});
+
+test('sharing falls back to the fast audio when there is no personal voice', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__sharedFiles = [];
+    navigator.share = (data) => {
+      window.__sharedFiles.push((data.files || []).map((f) => f.name));
+      return Promise.resolve();
+    };
+    navigator.canShare = () => true;
+  });
+
+  const speakRequests = [];
+  await page.route('**/api/speak', async (route) => {
+    speakRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
+    });
+  });
+
+  await translateOnce(page);
+
+  const shareBtn = page.locator('.message-card .share-audio-btn');
+  await expect(shareBtn).toBeVisible({ timeout: 8000 });
+  await shareBtn.click();
+
+  await expect.poll(async () => page.evaluate(() => window.__sharedFiles.length)).toBe(1);
+  // No premium render exists for this profile — only fast-quality requests.
+  expect(speakRequests.every((body) => !body.quality)).toBe(true);
+});
+
 test('a missing pro voice surfaces the server guidance instead of falling back', async ({ page }) => {
   // The client believes the PVC is ready but the server disagrees (e.g. the
   // training was reset) — the guidance must reach the user, no fallback.
