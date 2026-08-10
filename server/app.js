@@ -44,7 +44,9 @@ import {
 } from './profile-settings-store.js';
 import { ensureUserRegistryLoaded } from './user-store.js';
 import {
+  addAutoProVoiceSample,
   addProVoiceSample,
+  readVoiceSampleAudio,
   addVoiceSample,
   clearAllProVoiceSamples,
   clearAllVoiceSamples,
@@ -674,10 +676,11 @@ function formatVoiceProfileResponse(user, voiceProfile) {
       createdAt,
       durationMs: Number(durationMs) || 0,
     })),
-    proSamples: (voiceProfile.proSamples || []).map(({ id, createdAt, durationMs }) => ({
+    proSamples: (voiceProfile.proSamples || []).map(({ id, createdAt, durationMs, auto }) => ({
       id,
       createdAt,
       durationMs: Number(durationMs) || 0,
+      ...(auto ? { auto: true } : {}),
     })),
     voiceReady: Boolean(resolveVoiceId(user, voiceProfile)),
     elevenlabsConfigured: isElevenLabsConfigured(),
@@ -801,6 +804,25 @@ export function createApp() {
     if (slot == null) return;
     const voiceProfile = await getVoiceProfile(req.user.id, slot);
     res.json(formatVoiceProfileResponse(req.user, voiceProfile));
+  });
+
+  // Audio of one of the caller's own voice samples. The client computes the
+  // reference voiceprint for auto-collection from these.
+  app.get('/api/voice/samples/:sampleId/audio', requireAppAuth, async (req, res) => {
+    const slot = requireProfileSlot(req, res);
+    if (slot == null) return;
+    try {
+      const sample = await readVoiceSampleAudio(req.user.id, slot, req.params.sampleId);
+      if (!sample) {
+        return res.status(404).json({ error: 'Sample not found' });
+      }
+      res.set('Content-Type', sample.mimeType);
+      res.set('Cache-Control', 'private, max-age=86400');
+      res.send(sample.buffer);
+    } catch (err) {
+      console.error('Voice sample audio error:', err);
+      res.status(500).json({ error: 'Could not read voice sample' });
+    }
   });
 
   app.delete('/api/voice/profile', requireAppAuth, async (req, res) => {
@@ -948,7 +970,10 @@ export function createApp() {
     }
 
     try {
-      const profile = await addProVoiceSample(req.user.id, slot, req.file.buffer, {
+      // Auto-collected clips (dictations matching the user's voiceprint) use
+      // the rolling window; deliberate recordings keep the strict limits.
+      const addSample = req.body?.auto === '1' ? addAutoProVoiceSample : addProVoiceSample;
+      const profile = await addSample(req.user.id, slot, req.file.buffer, {
         mimeType: req.file.mimetype || 'audio/webm',
         durationMs: Number(req.body?.durationMs),
       });

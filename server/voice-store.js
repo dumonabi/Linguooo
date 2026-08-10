@@ -174,6 +174,18 @@ export async function listVoiceSampleBuffers(userId, slotNumber) {
   return { profile, buffers };
 }
 
+// Audio of one of the user's own (instant-clone) samples — the client uses
+// them to compute the voiceprint that auto-collection compares against.
+export async function readVoiceSampleAudio(userId, slotNumber, sampleId) {
+  const slot = validateProfileSlot(slotNumber);
+  const profile = await getVoiceProfile(userId, slot);
+  const sample = profile.samples.find((entry) => entry.id === sampleId);
+  if (!sample) return null;
+  const buffer = await readBuffer(sampleKey(userId, slot, sample.id, sample.ext));
+  if (!buffer) return null;
+  return { buffer, mimeType: sample.mimeType || 'audio/webm' };
+}
+
 function extForMime(mimeType = 'audio/webm') {
   if (mimeType.includes('mp4')) return 'mp4';
   if (mimeType.includes('ogg') || mimeType.includes('opus')) return 'ogg';
@@ -255,6 +267,59 @@ export async function addProVoiceSample(userId, slotNumber, buffer, {
   });
 
   await writeMeta(userId, slot, profile);
+  return profile;
+}
+
+// Auto-collected pro samples (dictations that matched the user's voiceprint)
+// keep the bank fresh with a rolling window: when the recommended maximum is
+// reached, the oldest auto-collected clips make room for the new one.
+// Deliberately recorded (manual) takes are never evicted.
+export async function addAutoProVoiceSample(userId, slotNumber, buffer, {
+  mimeType = 'audio/webm',
+  durationMs = null,
+} = {}) {
+  const slot = validateProfileSlot(slotNumber);
+  const profile = await getVoiceProfile(userId, slot);
+
+  const safeDurationMs = Math.max(0, Math.round(Number(durationMs) || 0));
+  const overBudget = () =>
+    profile.proSamples.length >= MAX_PRO_SAMPLES
+    || totalSampleDurationMs(profile.proSamples) + safeDurationMs > PRO_MAX_TOTAL_MS;
+
+  const evicted = [];
+  while (overBudget()) {
+    const oldestAuto = profile.proSamples.find((entry) => entry.auto);
+    if (!oldestAuto) break;
+    profile.proSamples = profile.proSamples.filter((entry) => entry.id !== oldestAuto.id);
+    evicted.push(oldestAuto);
+  }
+  if (overBudget()) {
+    const err = new Error('Pro sample bank is full of manual recordings');
+    err.code = 'DURATION_LIMIT';
+    throw err;
+  }
+
+  const ext = extForMime(mimeType);
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  await writeBuffer(proSampleKey(userId, slot, id, ext), buffer, mimeType);
+
+  profile.proSamples.push({
+    id,
+    ext,
+    mimeType,
+    auto: true,
+    createdAt: Date.now(),
+    sizeBytes: buffer.length,
+    ...(safeDurationMs > 0 ? { durationMs: safeDurationMs } : {}),
+  });
+
+  await writeMeta(userId, slot, profile);
+
+  // Delete evicted blobs only after the metadata no longer references them.
+  for (const sample of evicted) {
+    await deleteFile(proSampleKey(userId, slot, sample.id, sample.ext));
+  }
+
   return profile;
 }
 

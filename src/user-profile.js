@@ -25,6 +25,7 @@ import {
   hydrateProfileFromServer,
   scheduleProfileSettingsSync,
 } from './profile-sync.js';
+import { isAutoCollectEnabled, setAutoCollectEnabled } from './voice-match.js';
 import {
   getProVoicePrompts,
   getVoicePrompts,
@@ -1046,6 +1047,31 @@ function buildProSamplesProgressMarkup(ui, state) {
   `;
 }
 
+// Auto-collection toggle: dictations that match the user's voiceprint feed
+// the PRO sample bank on their own (rolling window once it is full). Only
+// meaningful when the instant voice (the reference) exists.
+function buildAutoCollectMarkup(ui, state) {
+  if (!state.voiceReady) return '';
+  const user = getStoredUser();
+  const slot = getCurrentProfileSlot() ?? 1;
+  const enabled = user?.id ? isAutoCollectEnabled(user.id, slot) : true;
+  return `
+    <label class="user-profile-auto-collect">
+      <input type="checkbox" id="user-voice-auto-collect" ${enabled ? 'checked' : ''} />
+      <span>${escapeHtml(ui.autoCollectLabel)}</span>
+    </label>
+    <p class="user-profile-note user-profile-auto-collect-hint">${escapeHtml(ui.autoCollectHint)}</p>
+  `;
+}
+
+function bindAutoCollectToggle(root) {
+  $('#user-voice-auto-collect', root)?.addEventListener('change', (event) => {
+    const user = getStoredUser();
+    if (!user?.id) return;
+    setAutoCollectEnabled(user.id, getCurrentProfileSlot() ?? 1, event.target.checked);
+  });
+}
+
 function buildProVoiceExtrasMarkup(ui, state) {
   const busy = submittingProVoice;
   const reachedGoal = state.proTotalDurationMs >= state.proMinTotalMs;
@@ -1078,12 +1104,14 @@ function buildProVoiceExtrasMarkup(ui, state) {
       >${PROFILE_RECORD_AGAIN_ICON_SVG}</button>
       ` : ''}
     </div>
+    ${buildAutoCollectMarkup(ui, state)}
   `;
 }
 
 function bindProVoiceControls(root) {
   $('#user-voice-pro-submit-btn', root)?.addEventListener('click', () => void submitProVoice());
   $('#user-voice-pro-reset-btn', root)?.addEventListener('click', () => void resetProSamples());
+  bindAutoCollectToggle(root);
 }
 
 // ---- In-app PVC verification and training ----
@@ -1223,7 +1251,9 @@ async function renderVoiceSamplesPage() {
       main.innerHTML = `
         ${buildProModeToggleMarkup(ui, false)}
         <p class="user-profile-note user-profile-pro-submitted">${escapeHtml(ui.proReadyNote)}</p>
+        ${buildAutoCollectMarkup(ui, state)}
       `;
+      bindAutoCollectToggle(page);
     } else if (step === 'training') {
       if (progressSlot) progressSlot.innerHTML = '';
       main.innerHTML = `

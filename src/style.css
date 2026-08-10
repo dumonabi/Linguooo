@@ -4743,6 +4743,31 @@ html.user-profile-menu-open body {
   margin-top: 0.65rem;
 }
 
+/* Auto-collect toggle: dictations matching the user's voiceprint feed the
+   PRO sample bank on their own. */
+.user-profile-auto-collect {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.user-profile-auto-collect input {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--accent, #22c55e);
+  cursor: pointer;
+}
+
+.user-profile-auto-collect-hint {
+  margin-top: 0.35rem;
+  color: var(--text-muted, rgba(255, 255, 255, 0.72));
+}
+
 .user-profile-pro-btn {
   flex: 1 1 auto;
   display: flex;

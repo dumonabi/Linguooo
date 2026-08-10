@@ -31,6 +31,12 @@ export async function setupApiMocks(page, options = {}) {
 
   // Stateful chat mock shared with the test: pushing into `messages` makes
   // the app's next poll pick the message up, like a real incoming message.
+  // Auto-collected voice sample uploads land here so tests can assert on
+  // them (or on their absence).
+  const voice = {
+    proSampleRequests: [],
+  };
+
   const chat = {
     code: chatOptions.code ?? 'MyCode11',
     userId: chatOptions.userId ?? 'test-user',
@@ -207,6 +213,26 @@ export async function setupApiMocks(page, options = {}) {
           pvcSubmitted: false,
           proSamples: [],
           ...voiceProfileOverrides,
+        }),
+      });
+    }
+
+    if (path === '/api/voice/pro-samples' && route.request().method() === 'POST') {
+      const raw = route.request().postDataBuffer()?.toString('latin1') || '';
+      voice.proSampleRequests.push({
+        auto: raw.includes('name="auto"'),
+        slot: url.searchParams.get('slot'),
+      });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          sampleId: `sample-${voice.proSampleRequests.length}`,
+          proSampleCount: voice.proSampleRequests.length,
+          proTotalDurationMs: 0,
+          proMinTotalMs: 1800000,
+          proMaxTotalMs: 10800000,
         }),
       });
     }
@@ -416,7 +442,7 @@ export async function setupApiMocks(page, options = {}) {
     return route.fulfill({ status: 404, body: 'Not found' });
   });
 
-  return { chat };
+  return { chat, voice };
 }
 
 function defaultConverseResponse(index) {

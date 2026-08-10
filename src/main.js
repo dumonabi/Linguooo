@@ -24,6 +24,7 @@ import {
 } from './pending-audio.js';
 import { bindKeepWarm } from './keep-warm.js';
 import { initChat, isChatMode, sendChatMessage } from './chat.js';
+import { maybeCollectVoiceSample } from './voice-match.js';
 import { registerPwa } from './pwa.js';
 
 const STORAGE_KEY = 'lingo-languages';
@@ -3201,6 +3202,9 @@ async function acceptRecording({ autoLimit = false } = {}) {
     }
 
     appendToDraft(transcript);
+    // If this dictation sounds like the profile owner, quietly add it to the
+    // pro-voice sample bank (checked on-device, uploaded in the background).
+    maybeCollectVoiceSample(blob, mimeType, recordingMs);
   } finally {
     state.stoppingRecording = false;
     updateComposeState();
