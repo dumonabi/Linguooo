@@ -11,6 +11,7 @@ import {
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
 import {
   getSlotNameStorageKey,
+  getSlotNameUpdatedAtStorageKey,
   getVoiceLangStorageKey,
 } from './profile-keys.js';
 
@@ -30,11 +31,17 @@ function normalizeSlotList(slots) {
 function collectLocalProfileSettings(userId) {
   const slots = loadProfileSlotNumbers(userId);
   const slotNames = {};
+  const slotNamesUpdatedAt = {};
   const voiceLangBySlot = {};
 
   for (const slot of slots) {
     const name = readProfileValue(getSlotNameStorageKey(userId, slot))?.trim();
     if (name) slotNames[String(slot)] = name.slice(0, MAX_SLOT_NAME_CHARS);
+
+    // The timestamp travels even when the name is empty: a cleared name with
+    // a fresh timestamp is how a deletion propagates to other devices.
+    const at = Number(readProfileValue(getSlotNameUpdatedAtStorageKey(userId, slot)));
+    if (Number.isFinite(at) && at > 0) slotNamesUpdatedAt[String(slot)] = at;
 
     const lang = readProfileValue(getVoiceLangStorageKey(userId, slot))?.trim();
     if (lang) voiceLangBySlot[String(slot)] = lang;
@@ -43,6 +50,7 @@ function collectLocalProfileSettings(userId) {
   return {
     slots,
     slotNames,
+    slotNamesUpdatedAt,
     activeSlot: loadActiveProfileSlot(userId),
     voiceLangBySlot,
   };
@@ -55,10 +63,31 @@ function mergeProfileSettings(localSnapshot, serverData, voiceOccupied) {
     ...voiceOccupied,
   ]);
 
-  const slotNames = {
-    ...(serverData?.slotNames && typeof serverData.slotNames === 'object' ? serverData.slotNames : {}),
-    ...localSnapshot.slotNames,
-  };
+  // Last-write-wins per slot: whichever device renamed most recently keeps
+  // its name everywhere. Entries without a timestamp (legacy data) lose to
+  // any timestamped rename. An entry can carry a timestamp but no name —
+  // that is a deletion, and it also propagates.
+  const slotNames = {};
+  const slotNamesUpdatedAt = {};
+  const serverNames = serverData?.slotNames && typeof serverData.slotNames === 'object' ? serverData.slotNames : {};
+  const serverNamesAt = serverData?.slotNamesUpdatedAt && typeof serverData.slotNamesUpdatedAt === 'object'
+    ? serverData.slotNamesUpdatedAt
+    : {};
+  const nameSlots = new Set([
+    ...Object.keys(serverNames),
+    ...Object.keys(serverNamesAt),
+    ...Object.keys(localSnapshot.slotNames),
+    ...Object.keys(localSnapshot.slotNamesUpdatedAt || {}),
+  ]);
+  for (const slot of nameSlots) {
+    const localAt = Number(localSnapshot.slotNamesUpdatedAt?.[slot]) || 0;
+    const serverAt = Number(serverNamesAt[slot]) || 0;
+    const useLocal = localAt >= serverAt;
+    const name = useLocal ? localSnapshot.slotNames[slot] : serverNames[slot];
+    const at = useLocal ? localAt : serverAt;
+    if (name) slotNames[slot] = name;
+    if (at) slotNamesUpdatedAt[slot] = at;
+  }
 
   const voiceLangBySlot = {
     ...(serverData?.voiceLangBySlot && typeof serverData.voiceLangBySlot === 'object'
@@ -83,6 +112,7 @@ function mergeProfileSettings(localSnapshot, serverData, voiceOccupied) {
   return {
     slots: mergedSlots.length ? mergedSlots : localSnapshot.slots,
     slotNames,
+    slotNamesUpdatedAt,
     activeSlot,
     voiceLangBySlot,
   };
@@ -93,11 +123,21 @@ function applyProfileSettingsLocally(userId, settings) {
     saveProfileSlotNumbers(userId, settings.slots);
   }
 
-  for (const [slot, name] of Object.entries(settings.slotNames || {})) {
+  // Every slot with a name timestamp gets its merged value applied — an
+  // absent name there means the slot was renamed to empty (deleted).
+  const mergedNameSlots = new Set([
+    ...Object.keys(settings.slotNames || {}),
+    ...Object.keys(settings.slotNamesUpdatedAt || {}),
+  ]);
+  for (const slot of mergedNameSlots) {
     writeProfileValue(
       getSlotNameStorageKey(userId, slot),
-      String(name || '').trim().slice(0, MAX_SLOT_NAME_CHARS),
+      String(settings.slotNames?.[slot] || '').trim().slice(0, MAX_SLOT_NAME_CHARS),
     );
+    const at = Number(settings.slotNamesUpdatedAt?.[slot]) || 0;
+    if (at) {
+      writeProfileValue(getSlotNameUpdatedAtStorageKey(userId, slot), String(at));
+    }
   }
 
   for (const [slot, lang] of Object.entries(settings.voiceLangBySlot || {})) {
@@ -182,12 +222,14 @@ export async function hydrateProfileFromServer(userId = getStoredUser()?.id) {
   const serverPayload = {
     slots: normalizeSlotList(serverData.slots),
     slotNames: serverData.slotNames || {},
+    slotNamesUpdatedAt: serverData.slotNamesUpdatedAt || {},
     activeSlot: Number(serverData.activeSlot) || 1,
     voiceLangBySlot: serverData.voiceLangBySlot || {},
   };
   const mergedPayload = {
     slots: merged.slots,
     slotNames: merged.slotNames,
+    slotNamesUpdatedAt: merged.slotNamesUpdatedAt,
     activeSlot: merged.activeSlot,
     voiceLangBySlot: merged.voiceLangBySlot,
   };

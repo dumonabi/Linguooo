@@ -30,6 +30,52 @@ function normalizeSlotNames(slotNames) {
   return normalized;
 }
 
+function normalizeSlotNamesUpdatedAt(slotNamesUpdatedAt) {
+  if (!slotNamesUpdatedAt || typeof slotNamesUpdatedAt !== 'object') return {};
+  const normalized = {};
+  for (const [rawSlot, rawAt] of Object.entries(slotNamesUpdatedAt)) {
+    const slot = Number(rawSlot);
+    const at = Number(rawAt);
+    if (!Number.isInteger(slot) || slot < 1 || slot > MAX_PROFILE_SLOT) continue;
+    if (!Number.isFinite(at) || at <= 0) continue;
+    normalized[String(slot)] = Math.round(at);
+  }
+  return normalized;
+}
+
+// Slot names sync last-write-wins across devices: for each slot, the entry
+// with the newest timestamp survives — whether it comes from this request or
+// from what is already stored. A timestamp without a name is a deletion.
+function mergeSlotNames(stored, input) {
+  const storedNames = normalizeSlotNames(stored?.slotNames);
+  const storedAt = normalizeSlotNamesUpdatedAt(stored?.slotNamesUpdatedAt);
+  const inputNames = normalizeSlotNames(input.slotNames);
+  const inputAt = normalizeSlotNamesUpdatedAt(input.slotNamesUpdatedAt);
+
+  // Legacy clients send no timestamps; keep their old replace semantics so
+  // renames from a not-yet-updated device still work.
+  if (!input.slotNamesUpdatedAt || typeof input.slotNamesUpdatedAt !== 'object') {
+    return { slotNames: inputNames, slotNamesUpdatedAt: storedAt };
+  }
+
+  const slotNames = {};
+  const slotNamesUpdatedAt = {};
+  const slots = new Set([
+    ...Object.keys(storedNames),
+    ...Object.keys(storedAt),
+    ...Object.keys(inputNames),
+    ...Object.keys(inputAt),
+  ]);
+  for (const slot of slots) {
+    const useInput = (inputAt[slot] || 0) >= (storedAt[slot] || 0);
+    const name = useInput ? inputNames[slot] : storedNames[slot];
+    const at = useInput ? inputAt[slot] : storedAt[slot];
+    if (name) slotNames[slot] = name;
+    if (at) slotNamesUpdatedAt[slot] = at;
+  }
+  return { slotNames, slotNamesUpdatedAt };
+}
+
 function normalizeVoiceLangBySlot(voiceLangBySlot) {
   if (!voiceLangBySlot || typeof voiceLangBySlot !== 'object') return {};
   const normalized = {};
@@ -96,6 +142,7 @@ function buildSettingsPayload(stored, voiceSlots) {
   return {
     slots,
     slotNames,
+    slotNamesUpdatedAt: normalizeSlotNamesUpdatedAt(stored?.slotNamesUpdatedAt),
     activeSlot,
     voiceLangBySlot,
     voiceSlots,
@@ -112,15 +159,19 @@ export async function getProfileSettings(userId) {
 }
 
 export async function saveProfileSettings(userId, input = {}) {
-  const voiceSlots = await listVoiceSlotSummaries(userId);
+  const [previous, voiceSlots] = await Promise.all([
+    readStoredSettings(userId),
+    listVoiceSlotSummaries(userId),
+  ]);
   const voiceSlotNumbers = voiceSlots.map((entry) => entry.slot);
   const slots = mergeSlots(input.slots, voiceSlotNumbers);
-  const slotNames = normalizeSlotNames(input.slotNames);
+  const { slotNames, slotNamesUpdatedAt } = mergeSlotNames(previous, input);
   const voiceLangBySlot = normalizeVoiceLangBySlot(input.voiceLangBySlot);
   const activeSlot = normalizeActiveSlot(input.activeSlot, slots);
   const stored = {
     slots,
     slotNames,
+    slotNamesUpdatedAt,
     activeSlot,
     voiceLangBySlot,
     updatedAt: Date.now(),

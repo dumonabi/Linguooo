@@ -37,6 +37,22 @@ export async function setupApiMocks(page, options = {}) {
     proSampleRequests: [],
   };
 
+  // Stateful profile settings, like the real server: PUTs merge slot names
+  // last-write-wins and tests can preseed "another device's" rename.
+  const settings = {
+    stored: {
+      slots: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11],
+      slotNames: {},
+      slotNamesUpdatedAt: {},
+      activeSlot: 1,
+      voiceLangBySlot: {},
+      voiceSlots: [],
+      updatedAt: null,
+      ...(options.profileSettings ?? {}),
+    },
+    puts: [],
+  };
+
   const chat = {
     code: chatOptions.code ?? 'MyCode11',
     userId: chatOptions.userId ?? 'test-user',
@@ -158,14 +174,6 @@ export async function setupApiMocks(page, options = {}) {
     }
 
     if (path === '/api/profile/settings') {
-      const defaultSettings = {
-        slots: [1, 2, 3, 4, 5, 6, 7, 8, 9, 11],
-        slotNames: {},
-        activeSlot: 1,
-        voiceLangBySlot: {},
-        voiceSlots: [],
-        updatedAt: null,
-      };
       if (route.request().method() === 'PUT') {
         let body = {};
         try {
@@ -173,21 +181,40 @@ export async function setupApiMocks(page, options = {}) {
         } catch {
           body = {};
         }
-        return route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            ...defaultSettings,
-            ...body,
-            voiceSlots: [],
-            updatedAt: Date.now(),
-          }),
-        });
+        settings.puts.push(body);
+
+        // Same last-write-wins merge as the real server.
+        const names = {};
+        const namesAt = {};
+        const slots = new Set([
+          ...Object.keys(settings.stored.slotNames),
+          ...Object.keys(settings.stored.slotNamesUpdatedAt),
+          ...Object.keys(body.slotNames || {}),
+          ...Object.keys(body.slotNamesUpdatedAt || {}),
+        ]);
+        for (const slot of slots) {
+          const inputAt = Number(body.slotNamesUpdatedAt?.[slot]) || 0;
+          const storedAt = Number(settings.stored.slotNamesUpdatedAt[slot]) || 0;
+          const useInput = inputAt >= storedAt;
+          const name = useInput ? body.slotNames?.[slot] : settings.stored.slotNames[slot];
+          const at = useInput ? inputAt : storedAt;
+          if (name) names[slot] = name;
+          if (at) namesAt[slot] = at;
+        }
+
+        settings.stored = {
+          ...settings.stored,
+          ...body,
+          slotNames: names,
+          slotNamesUpdatedAt: namesAt,
+          voiceSlots: settings.stored.voiceSlots,
+          updatedAt: Date.now(),
+        };
       }
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(defaultSettings),
+        body: JSON.stringify(settings.stored),
       });
     }
 
@@ -442,7 +469,7 @@ export async function setupApiMocks(page, options = {}) {
     return route.fulfill({ status: 404, body: 'Not found' });
   });
 
-  return { chat, voice };
+  return { chat, voice, settings };
 }
 
 function defaultConverseResponse(index) {

@@ -19,7 +19,7 @@ import {
   loadActiveProfileSlot,
   voiceApiPath,
 } from './profile-active-slot.js';
-import { getSlotNameStorageKey, getVoiceLangStorageKey, VOICE_LANG_PREFIX } from './profile-keys.js';
+import { getSlotNameStorageKey, getSlotNameUpdatedAtStorageKey, getVoiceLangStorageKey, VOICE_LANG_PREFIX } from './profile-keys.js';
 import { readProfileValue, writeProfileValue } from './profile-storage.js';
 import {
   hydrateProfileFromServer,
@@ -93,6 +93,8 @@ function saveProfileSlotName(sessionUserId, slotNumber, name) {
       getSlotNameStorageKey(sessionUserId, slotNumber),
       String(name || '').trim().slice(0, MAX_SLOT_NAME_CHARS),
     );
+    // Cross-device sync is last-write-wins on this timestamp.
+    writeProfileValue(getSlotNameUpdatedAtStorageKey(sessionUserId, slotNumber), String(Date.now()));
     scheduleProfileSettingsSync();
   } catch {
     // ignore storage errors
@@ -596,6 +598,7 @@ async function handleDeleteProfileUser(slotNumber) {
 
   try {
     writeProfileValue(getSlotNameStorageKey(sessionUserId, normalizedSlot), '');
+    writeProfileValue(getSlotNameUpdatedAtStorageKey(sessionUserId, normalizedSlot), String(Date.now()));
   } catch {
     // ignore storage errors
   }
@@ -1775,8 +1778,26 @@ function setMenuOpen(open) {
   if (panel) panel.hidden = !open;
   if (open) {
     window.dispatchEvent(new CustomEvent('lingo:close-lang-pickers'));
+    // Pick up changes made on other devices (e.g. profile renames) without
+    // waiting for a full reload: refresh settings while the menu is open.
+    void refreshRemoteProfileSettings();
   }
   updateTrigger();
+}
+
+async function refreshRemoteProfileSettings() {
+  const userId = getStoredUser()?.id;
+  if (!userId) return;
+  try {
+    const hydrated = await hydrateProfileFromServer(userId);
+    // Re-render only when it is safe: fetching finishes right after the menu
+    // opens, before the user can be mid-recording or mid-edit.
+    if (hydrated && menuOpen && !recordingSession) {
+      await renderActiveProfileUi();
+    }
+  } catch {
+    // offline — local values stay
+  }
 }
 
 async function refreshVoiceProfile(slotNumber = getCurrentProfileSlot()) {
@@ -1810,6 +1831,11 @@ export async function refreshUserSession() {
   const data = slot ? await fetchCurrentUser(slot) : await fetchCurrentUser();
   if (data?.user) {
     setStoredUser(applyDisplayName(data.user));
+    // On a cold start the stored user only becomes known here — hydrate now
+    // or settings changed on other devices would be missed until reload.
+    if (!user?.id) {
+      await hydrateProfileFromServer(data.user.id);
+    }
     profileUserMenuSelection = slot ?? loadProfileUserMenuSelection(data.user.id) ?? 1;
     if (profileUserMenuSelection) {
       saveProfileUserMenuSelection(data.user.id, profileUserMenuSelection);
