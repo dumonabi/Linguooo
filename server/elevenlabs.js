@@ -257,8 +257,11 @@ export async function addPvcSamples(voiceId, samples, { removeBackgroundNoise = 
   return data;
 }
 
-// Returns the verification captcha as a base64 PNG. The image contains a few
-// lines of text the voice owner must read aloud.
+// Returns the verification captcha as { image (base64), mimeType }. The
+// image contains a few lines of text the voice owner must read aloud.
+// ElevenLabs may answer with raw image bytes, a JSON-wrapped base64 string,
+// or a bare base64/data-URL — handle all three. Reading the body as text
+// would corrupt raw bytes, so always start from the binary buffer.
 export async function getPvcCaptcha(voiceId) {
   const apiKey = getElevenLabsApiKey();
   if (!apiKey) {
@@ -269,11 +272,11 @@ export async function getPvcCaptcha(voiceId) {
     headers: authHeaders(),
   });
 
-  const text = await res.text().catch(() => '');
+  const buffer = Buffer.from(await res.arrayBuffer().catch(() => new ArrayBuffer(0)));
   if (!res.ok) {
     let detail = 'Could not fetch the verification captcha';
     try {
-      const data = JSON.parse(text);
+      const data = JSON.parse(buffer.toString('utf8'));
       detail = data?.detail?.message || data?.detail || data?.message || detail;
     } catch {
       // keep default message
@@ -281,8 +284,14 @@ export async function getPvcCaptcha(voiceId) {
     throw new Error(typeof detail === 'string' ? detail : 'Could not fetch the verification captcha');
   }
 
-  // The endpoint returns the base64 image, usually as a JSON-encoded string.
-  let base64 = text.trim();
+  const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+  const isJpeg = buffer.length > 2 && buffer[0] === 0xff && buffer[1] === 0xd8;
+  if (isPng || isJpeg) {
+    return { image: buffer.toString('base64'), mimeType: isPng ? 'image/png' : 'image/jpeg' };
+  }
+
+  // Not raw bytes — a JSON-wrapped or bare base64 string.
+  let base64 = buffer.toString('utf8').trim();
   if (base64.startsWith('"') || base64.startsWith('{')) {
     try {
       const parsed = JSON.parse(base64);
@@ -291,11 +300,17 @@ export async function getPvcCaptcha(voiceId) {
       // fall through with the raw text
     }
   }
-  base64 = String(base64 || '').replace(/^data:image\/\w+;base64,/, '');
-  if (!base64) {
-    throw new Error('ElevenLabs returned an empty captcha');
+  let mimeType = 'image/png';
+  const dataUrlMatch = String(base64 || '').match(/^data:(image\/\w+);base64,/);
+  if (dataUrlMatch) {
+    mimeType = dataUrlMatch[1];
+    base64 = base64.slice(dataUrlMatch[0].length);
   }
-  return base64;
+  base64 = String(base64 || '').replace(/\s+/g, '');
+  if (!base64 || !/^[A-Za-z0-9+/=]+$/.test(base64)) {
+    throw new Error('ElevenLabs returned an unreadable captcha');
+  }
+  return { image: base64, mimeType };
 }
 
 export async function verifyPvcCaptcha(voiceId, { buffer, mimeType }) {

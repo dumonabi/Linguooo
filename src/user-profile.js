@@ -405,9 +405,10 @@ let submittingProVoice = false;
 // server on demand: lang -> { prompts, proPrompts }.
 const remoteVoicePrompts = new Map();
 const remoteVoicePromptsPending = new Set();
-// In-app PVC ownership verification: the captcha image (base64 PNG with the
+// In-app PVC ownership verification: the captcha image (base64 with the
 // lines to read aloud), and whether the recording is being submitted.
 let proCaptchaImage = '';
+let proCaptchaMime = 'image/png';
 let loadingProCaptcha = false;
 let verifyingProVoice = false;
 // Training progress polling while the samples page is open.
@@ -1129,11 +1130,14 @@ async function ensureProCaptcha() {
   try {
     const res = await apiFetch(voiceApiPath('/api/voice/pro-captcha', getCurrentProfileSlot()));
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.image) {
+    // Accept only clean base64: anything else would corrupt the <img> markup.
+    const image = String(data.image || '').replace(/\s+/g, '');
+    if (!res.ok || !image || !/^[A-Za-z0-9+/=]+$/.test(image)) {
       toast(data.error || getVoiceUi(voiceLang).proVerifyFailed);
       return;
     }
-    proCaptchaImage = data.image;
+    proCaptchaImage = image;
+    proCaptchaMime = /^image\/(png|jpeg|webp)$/.test(String(data.mimeType)) ? data.mimeType : 'image/png';
   } catch {
     toast(getVoiceUi(voiceLang).proVerifyFailed);
   } finally {
@@ -1144,7 +1148,7 @@ async function ensureProCaptcha() {
 
 function buildProVerifyMarkup(ui, { isRecording }) {
   const captcha = proCaptchaImage
-    ? `<img class="user-profile-pro-captcha" src="data:image/png;base64,${proCaptchaImage}" alt="${escapeHtml(ui.proVerifyTitle)}" />`
+    ? `<img class="user-profile-pro-captcha" src="data:${proCaptchaMime};base64,${proCaptchaImage}" alt="${escapeHtml(ui.proVerifyTitle)}" />`
     : `<p class="user-profile-note">${escapeHtml(ui.proVerifyLoading)}</p>`;
 
   return `

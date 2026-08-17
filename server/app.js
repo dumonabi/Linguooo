@@ -1091,8 +1091,8 @@ export function createApp() {
       if (!profile.pvcPendingVoiceId) {
         return res.status(409).json({ error: 'Submit your samples first — there is no voice waiting for verification' });
       }
-      const image = await getPvcCaptcha(profile.pvcPendingVoiceId);
-      res.json({ ok: true, image });
+      const captcha = await getPvcCaptcha(profile.pvcPendingVoiceId);
+      res.json({ ok: true, image: captcha.image, mimeType: captcha.mimeType });
     } catch (err) {
       console.error('PVC captcha error:', err);
       res.status(502).json({ error: err.message || 'Could not fetch the verification text' });
