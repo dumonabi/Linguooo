@@ -409,7 +409,12 @@ const remoteVoicePromptsPending = new Set();
 // lines to read aloud), and whether the recording is being submitted.
 let proCaptchaImage = '';
 let proCaptchaMime = 'image/png';
+let proCaptchaFetchedAt = 0;
 let loadingProCaptcha = false;
+// ElevenLabs gives a limited window to read the text after requesting it
+// ("Time limit for voice verification exceeded"); refresh stale captchas
+// before they cost a wasted attempt.
+const PRO_CAPTCHA_TTL_MS = 4 * 60_000;
 let verifyingProVoice = false;
 // Training progress polling while the samples page is open.
 let proTrainingStatus = null;
@@ -420,6 +425,9 @@ const MIN_VOICE_CLIP_MS = VOICE_MIN_CLIP_SEC * 1000;
 // Keep individual pro takes below the serverless upload limit (~4.5 MB):
 // at 32 kbps Opus a 15-minute clip is ~3.6 MB.
 const PRO_MAX_CLIP_MS = 15 * 60_000;
+// ElevenLabs rejects ownership-verification readings shorter than 8 seconds,
+// and every rejection burns one of the few daily attempts — block early.
+const VERIFY_MIN_CLIP_MS = 8_500;
 
 function saveProfileGridSlotName(slotNumber, value) {
   const sessionUserId = getStoredUser()?.id;
@@ -1125,11 +1133,21 @@ function bindProVoiceControls(root) {
 // inside the app, so any user can complete their PRO voice here.
 
 async function ensureProCaptcha() {
-  if (proCaptchaImage || loadingProCaptcha) return;
+  if (loadingProCaptcha) return;
+  if (proCaptchaImage) {
+    // Never swap the text mid-reading; otherwise refresh it once stale.
+    const busy = recordingSession || verifyingProVoice || savingSample;
+    if (busy || Date.now() - proCaptchaFetchedAt < PRO_CAPTCHA_TTL_MS) return;
+    proCaptchaImage = '';
+  }
   loadingProCaptcha = true;
   try {
     const res = await apiFetch(voiceApiPath('/api/voice/pro-captcha', getCurrentProfileSlot()));
     const data = await res.json().catch(() => ({}));
+    if (res.status === 429 && data.resetAtMs) {
+      toast(getVoiceUi(voiceLang).proVerifyMaxAttempts.replace('{time}', new Date(data.resetAtMs).toLocaleString()));
+      return;
+    }
     // Accept only clean base64: anything else would corrupt the <img> markup.
     const image = String(data.image || '').replace(/\s+/g, '');
     if (!res.ok || !image || !/^[A-Za-z0-9+/=]+$/.test(image)) {
@@ -1138,6 +1156,7 @@ async function ensureProCaptcha() {
     }
     proCaptchaImage = image;
     proCaptchaMime = /^image\/(png|jpeg|webp)$/.test(String(data.mimeType)) ? data.mimeType : 'image/png';
+    proCaptchaFetchedAt = Date.now();
   } catch {
     toast(getVoiceUi(voiceLang).proVerifyFailed);
   } finally {
@@ -1876,6 +1895,14 @@ async function startVoiceSampleRecording() {
   // on iOS a resume() issued later is often ignored.
   profileMicWave.primeMicAudioOnGesture();
 
+  // On the verification step a stale captcha would be rejected by ElevenLabs
+  // ("time limit exceeded") and waste an attempt — refresh it before the mic
+  // opens so the user reads the current text.
+  if (proSamplesMode && proVoiceStep(getProfileState(user)) === 'verify') {
+    await ensureProCaptcha();
+    if (!proCaptchaImage) return;
+  }
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
@@ -1940,6 +1967,13 @@ async function stopVoiceSampleRecording() {
     return;
   }
 
+  // Too-short verification readings would waste one of the scarce attempts —
+  // keep the recording running and let the user finish the text.
+  if (isVerifyStep && Date.now() - session.startedAt < VERIFY_MIN_CLIP_MS) {
+    toast(getVoiceUi(voiceLang).proVerifyTooShort);
+    return;
+  }
+
   savingSample = true;
   if (isVerifyStep) verifyingProVoice = true;
   await renderActiveProfileUi();
@@ -1976,7 +2010,18 @@ async function stopVoiceSampleRecording() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      toast(data.error || (isVerifyStep ? ui.proVerifyFailed : 'Could not save voice sample'));
+      if (isVerifyStep && res.status === 429 && data.resetAtMs) {
+        // Attempts are capped — tell the user when the counter resets.
+        toast(ui.proVerifyMaxAttempts.replace('{time}', new Date(data.resetAtMs).toLocaleString()));
+      } else if (isVerifyStep) {
+        // Each attempt consumes its captcha: drop the cached image so the
+        // re-render fetches a fresh text for the next try.
+        proCaptchaImage = '';
+        toast(data.error || ui.proVerifyFailed);
+        window.setTimeout(() => toast(ui.proVerifyNewText), 2600);
+      } else {
+        toast(data.error || 'Could not save voice sample');
+      }
       await renderActiveProfileUi();
       return;
     }

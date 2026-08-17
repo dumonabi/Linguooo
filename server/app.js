@@ -1095,6 +1095,13 @@ export function createApp() {
       res.json({ ok: true, image: captcha.image, mimeType: captcha.mimeType });
     } catch (err) {
       console.error('PVC captcha error:', err);
+      if (err.code === 'MAX_VERIFICATION_ATTEMPTS') {
+        return res.status(429).json({
+          error: err.message,
+          code: err.code,
+          resetAtMs: err.resetAtMs || null,
+        });
+      }
       res.status(502).json({ error: err.message || 'Could not fetch the verification text' });
     }
   });
@@ -1125,6 +1132,18 @@ export function createApp() {
       res.json({ ok: true, training: true, ...proSamplesState(saved) });
     } catch (err) {
       console.error('PVC verify error:', err);
+      if (err.code === 'MAX_VERIFICATION_ATTEMPTS') {
+        return res.status(429).json({
+          error: err.message,
+          code: err.code,
+          resetAtMs: err.resetAtMs || null,
+        });
+      }
+      if (err.code === 'VERIFICATION_NOT_STARTED') {
+        // The captcha session expired or was consumed by a previous attempt;
+        // the client fetches a fresh text and asks the user to read again.
+        return res.status(409).json({ error: err.message, code: err.code });
+      }
       res.status(502).json({ error: err.message || 'Verification failed — try reading the text again' });
     }
   });

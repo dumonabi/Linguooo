@@ -257,6 +257,34 @@ export async function addPvcSamples(voiceId, samples, { removeBackgroundNoise = 
   return data;
 }
 
+// When ElevenLabs caps verification attempts it also reports when the
+// counter resets — surfaced to the user instead of a cryptic error.
+async function fetchVerificationResetMs(voiceId) {
+  try {
+    const res = await fetch(`${ELEVENLABS_BASE}/voices/${encodeURIComponent(voiceId)}`, {
+      headers: authHeaders(),
+    });
+    const data = await res.json();
+    const resetMs = Number(data?.fine_tuning?.next_max_verification_attempts_reset_unix_ms);
+    return Number.isFinite(resetMs) && resetMs > 0 ? resetMs : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildVerificationError(detail, voiceId, fallback) {
+  const status = typeof detail === 'object' ? detail?.status : '';
+  const message = (typeof detail === 'object' ? detail?.message : detail) || fallback;
+  const err = new Error(typeof message === 'string' ? message : fallback);
+  if (status === 'max_verification_attempts_reached' || /maximum number of verification attempts/i.test(err.message)) {
+    err.code = 'MAX_VERIFICATION_ATTEMPTS';
+    err.resetAtMs = await fetchVerificationResetMs(voiceId);
+  } else if (/has not started|nothing to verify/i.test(err.message)) {
+    err.code = 'VERIFICATION_NOT_STARTED';
+  }
+  return err;
+}
+
 // Returns the verification captcha as { image (base64), mimeType }. The
 // image contains a few lines of text the voice owner must read aloud.
 // ElevenLabs may answer with raw image bytes, a JSON-wrapped base64 string,
@@ -274,14 +302,14 @@ export async function getPvcCaptcha(voiceId) {
 
   const buffer = Buffer.from(await res.arrayBuffer().catch(() => new ArrayBuffer(0)));
   if (!res.ok) {
-    let detail = 'Could not fetch the verification captcha';
+    let detail = null;
     try {
       const data = JSON.parse(buffer.toString('utf8'));
-      detail = data?.detail?.message || data?.detail || data?.message || detail;
+      detail = data?.detail || data;
     } catch {
       // keep default message
     }
-    throw new Error(typeof detail === 'string' ? detail : 'Could not fetch the verification captcha');
+    throw await buildVerificationError(detail, voiceId, 'Could not fetch the verification captcha');
   }
 
   const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
@@ -334,8 +362,7 @@ export async function verifyPvcCaptcha(voiceId, { buffer, mimeType }) {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const detail = data?.detail?.message || data?.detail || data?.message || 'Verification failed';
-    throw new Error(typeof detail === 'string' ? detail : 'Verification failed');
+    throw await buildVerificationError(data?.detail || data, voiceId, 'Verification failed');
   }
   return data;
 }

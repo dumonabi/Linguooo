@@ -195,6 +195,55 @@ test('reading the captcha aloud verifies the voice and starts training in-app', 
   await expect(page.locator('.user-profile-pro-training-pct')).toHaveText('42%');
 });
 
+test('a verification reading under 8 seconds is blocked before it wastes an attempt', async ({ page }) => {
+  const proState = { count: 14, ms: 32 * 60_000, submitted: true, verified: false };
+  let verifyPosted = false;
+
+  await page.addInitScript(TIME_SKEW_INIT_SCRIPT);
+
+  await page.route('**/api/voice/profile*', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(buildProfileBody(proState)),
+  }));
+
+  await page.route('**/api/voice/pro-captcha*', (route) => {
+    if (route.request().method() === 'POST') {
+      verifyPosted = true;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, training: true }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, image: CAPTCHA_PNG_B64 }),
+    });
+  });
+
+  await openProSamplesPage(page);
+  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
+
+  await page.locator('#user-voice-record-btn').click();
+  await expect(page.locator('#user-voice-stop-btn')).toBeVisible();
+
+  // Stop after only ~3 "seconds": nothing is uploaded and recording continues.
+  await page.evaluate(() => { window.__timeSkewMs = 3_000; });
+  await page.locator('#user-voice-stop-btn').click();
+
+  await expect(page.locator('#toast')).toContainText('at least 8 seconds', { timeout: 8000 });
+  expect(verifyPosted).toBe(false);
+  await expect(page.locator('#user-voice-stop-btn')).toBeVisible();
+
+  // Once past the minimum, the same stop button submits the verification.
+  await page.evaluate(() => { window.__timeSkewMs = 15_000; });
+  await page.locator('#user-voice-stop-btn').click();
+  await expect(page.locator('#toast')).toContainText('Voice verified', { timeout: 8000 });
+  expect(verifyPosted).toBe(true);
+});
+
 test('languages without built-in texts fetch translated reading prompts', async ({ page }) => {
   const proState = { count: 0, ms: 0, submitted: false };
   let promptsLang = null;
