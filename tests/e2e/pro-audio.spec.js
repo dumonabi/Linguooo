@@ -256,6 +256,65 @@ test('sharing audio prefers the own-voice render over the generic fast audio', a
   expect(v3Requests[0].text).toBe('สวัสดีเพื่อน');
 });
 
+test('an expired share gesture keeps the audio and the next tap shares it instantly', async ({ page }) => {
+  // Generating the own-voice render can outlive the browser's transient
+  // activation window: navigator.share then throws NotAllowedError. The app
+  // must keep the prepared file and share it on the next tap without
+  // regenerating the audio.
+  await setupApiMocks(page, {
+    user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
+    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, elevenlabsConfigured: true },
+    onConverse: () => ({
+      rawText: 'hola amigo',
+      detectedLanguage: 'es',
+      sourceText: 'hola amigo',
+      translatedText: 'สวัสดีเพื่อน',
+      targetLanguage: 'th',
+    }),
+  });
+
+  await page.addInitScript(() => {
+    window.__sharedFiles = [];
+    window.__shareCalls = 0;
+    navigator.share = (data) => {
+      window.__shareCalls += 1;
+      if (window.__shareCalls === 1) {
+        const err = new Error('The request is not allowed by the user agent or the platform in the current context');
+        err.name = 'NotAllowedError';
+        return Promise.reject(err);
+      }
+      window.__sharedFiles.push((data.files || []).map((f) => f.name));
+      return Promise.resolve();
+    };
+    navigator.canShare = () => true;
+  });
+
+  const speakRequests = [];
+  await page.route('**/api/speak', async (route) => {
+    speakRequests.push(route.request().postDataJSON());
+    return route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
+    });
+  });
+
+  await translateOnce(page);
+
+  const shareBtn = page.locator('.message-card .share-audio-btn');
+  await expect(shareBtn).toBeVisible({ timeout: 8000 });
+  await shareBtn.click();
+
+  // First tap: activation expired, the user is told to tap again.
+  await expect(page.locator('#toast')).toContainText('tap the share button again', { timeout: 8000 });
+  await expect.poll(async () => page.evaluate(() => window.__shareCalls)).toBe(1);
+
+  await shareBtn.click();
+  await expect.poll(async () => page.evaluate(() => window.__sharedFiles.length)).toBe(1);
+  // The second tap reuses the cached file: exactly one v3 render in total.
+  expect(speakRequests.filter((body) => body.quality === 'v3').length).toBe(1);
+});
+
 test('sharing falls back to the fast audio when there is no personal voice', async ({ page }) => {
   await page.addInitScript(() => {
     window.__sharedFiles = [];

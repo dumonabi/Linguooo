@@ -3286,6 +3286,19 @@ async function shareClonedAudio(msg, btn) {
   }
 
   try {
+    if (typeof navigator.share !== 'function') {
+      showToast('Sharing audio is not supported on this device');
+      return;
+    }
+
+    // A previous tap already prepared the file: share it right away, with no
+    // awaits before navigator.share(), so the tap's transient-activation
+    // window is still intact and the share sheet is allowed to open.
+    if (msg._shareFile) {
+      await navigator.share({ files: [msg._shareFile], title: 'Translation audio' });
+      return;
+    }
+
     // Share the user's own voice whenever possible: the trained PVC or, for
     // v3-only languages (e.g. Thai), the instant clone. The generic fast
     // audio only ships when no personal render is available.
@@ -3312,16 +3325,24 @@ async function shareClonedAudio(msg, btn) {
     const filename = `lingu-translation-${Date.now()}.mp3`;
     const file = new File([blob], filename, { type: blob.type || 'audio/mpeg' });
 
-    if (typeof navigator.share !== 'function') {
-      showToast('Sharing audio is not supported on this device');
-      return;
-    }
     if (navigator.canShare && !navigator.canShare({ files: [file] })) {
       showToast('Sharing audio is not supported on this device');
       return;
     }
+    msg._shareFile = file;
 
-    await navigator.share({ files: [file], title: 'Translation audio' });
+    try {
+      await navigator.share({ files: [file], title: 'Translation audio' });
+    } catch (err) {
+      // Generating the voice took longer than the browser allows between the
+      // tap and share() ("request is not allowed by the user agent…"). The
+      // file is cached now, so the next tap shares it instantly.
+      if (err?.name === 'NotAllowedError') {
+        showToast('Audio ready — tap the share button again to send it');
+        return;
+      }
+      throw err;
+    }
   } catch (err) {
     if (err?.name !== 'AbortError') {
       showToast(err.message || 'Could not share audio');
