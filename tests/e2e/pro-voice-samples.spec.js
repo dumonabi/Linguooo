@@ -137,13 +137,16 @@ test('reaching 30 minutes unlocks submission to ElevenLabs', async ({ page }) =>
   await expect(page.locator('#toast')).toContainText('Samples sent', { timeout: 8000 });
   expect(createBody?.language).toBeTruthy();
 
-  // Submission flows straight into the in-app verification step.
-  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
+  // Submission flows straight into the in-app verification step. The captcha
+  // is NOT fetched yet: ElevenLabs' countdown starts on request, so the text
+  // only appears once the user taps record.
+  await expect(page.locator('#user-profile-voice-samples-page')).toContainText('will appear when you start recording');
 });
 
 test('reading the captcha aloud verifies the voice and starts training in-app', async ({ page }) => {
   const proState = { count: 14, ms: 32 * 60_000, submitted: true, verified: false };
   let verifyRequest = null;
+  let captchaGets = 0;
 
   await page.addInitScript(TIME_SKEW_INIT_SCRIPT);
 
@@ -163,6 +166,7 @@ test('reading the captcha aloud verifies the voice and starts training in-app', 
         body: JSON.stringify({ ok: true, training: true }),
       });
     }
+    captchaGets += 1;
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -178,17 +182,22 @@ test('reading the captcha aloud verifies the voice and starts training in-app', 
 
   await openProSamplesPage(page);
 
-  // The captcha (lines the owner reads aloud) renders inside the app.
-  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
+  // No captcha yet — it is only requested when recording starts, so the
+  // ElevenLabs countdown does not run while the user is getting ready.
+  await expect(page.locator('.user-profile-pro-captcha')).toHaveCount(0);
 
-  // Record the reading with the usual mic controls.
+  // Tapping record fetches a fresh captcha and shows it while the mic runs.
   await page.locator('#user-voice-record-btn').click();
+  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
   await expect(page.locator('#user-voice-stop-btn')).toBeVisible();
   await page.evaluate(() => { window.__timeSkewMs = 15_000; });
   await page.locator('#user-voice-stop-btn').click();
 
   await expect(page.locator('#toast')).toContainText('Voice verified', { timeout: 8000 });
   expect(verifyRequest).not.toBeNull();
+  // Every captcha request burns one of the ~5 daily ElevenLabs attempts, so
+  // exactly one fetch must happen for the whole successful flow.
+  expect(captchaGets).toBe(1);
 
   // Training progress is reported in-app from then on.
   await expect(page.locator('.user-profile-pro-training')).toBeVisible();
@@ -224,9 +233,9 @@ test('a verification reading under 8 seconds is blocked before it wastes an atte
   });
 
   await openProSamplesPage(page);
-  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
 
   await page.locator('#user-voice-record-btn').click();
+  await expect(page.locator('.user-profile-pro-captcha')).toBeVisible();
   await expect(page.locator('#user-voice-stop-btn')).toBeVisible();
 
   // Stop after only ~3 "seconds": nothing is uploaded and recording continues.

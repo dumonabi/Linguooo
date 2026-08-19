@@ -409,12 +409,7 @@ const remoteVoicePromptsPending = new Set();
 // lines to read aloud), and whether the recording is being submitted.
 let proCaptchaImage = '';
 let proCaptchaMime = 'image/png';
-let proCaptchaFetchedAt = 0;
 let loadingProCaptcha = false;
-// ElevenLabs gives a limited window to read the text after requesting it
-// ("Time limit for voice verification exceeded"); refresh stale captchas
-// before they cost a wasted attempt.
-const PRO_CAPTCHA_TTL_MS = 4 * 60_000;
 let verifyingProVoice = false;
 // Training progress polling while the samples page is open.
 let proTrainingStatus = null;
@@ -1132,43 +1127,46 @@ function bindProVoiceControls(root) {
 // read aloud. Both the captcha and the training that follows run entirely
 // inside the app, so any user can complete their PRO voice here.
 
-async function ensureProCaptcha() {
-  if (loadingProCaptcha) return;
-  if (proCaptchaImage) {
-    // Never swap the text mid-reading; otherwise refresh it once stale.
-    const busy = recordingSession || verifyingProVoice || savingSample;
-    if (busy || Date.now() - proCaptchaFetchedAt < PRO_CAPTCHA_TTL_MS) return;
-    proCaptchaImage = '';
-  }
+// ElevenLabs starts its verification countdown the moment the captcha is
+// requested (and each request consumes one of the few daily attempts), so the
+// text is fetched only when the user taps record — never ahead of time.
+// Returns true when a fresh captcha is ready to be read.
+async function fetchFreshProCaptcha() {
+  if (loadingProCaptcha) return false;
+  proCaptchaImage = '';
   loadingProCaptcha = true;
   try {
     const res = await apiFetch(voiceApiPath('/api/voice/pro-captcha', getCurrentProfileSlot()));
     const data = await res.json().catch(() => ({}));
     if (res.status === 429 && data.resetAtMs) {
       toast(getVoiceUi(voiceLang).proVerifyMaxAttempts.replace('{time}', new Date(data.resetAtMs).toLocaleString()));
-      return;
+      return false;
     }
     // Accept only clean base64: anything else would corrupt the <img> markup.
     const image = String(data.image || '').replace(/\s+/g, '');
     if (!res.ok || !image || !/^[A-Za-z0-9+/=]+$/.test(image)) {
       toast(data.error || getVoiceUi(voiceLang).proVerifyFailed);
-      return;
+      return false;
     }
     proCaptchaImage = image;
     proCaptchaMime = /^image\/(png|jpeg|webp)$/.test(String(data.mimeType)) ? data.mimeType : 'image/png';
-    proCaptchaFetchedAt = Date.now();
+    return true;
   } catch {
     toast(getVoiceUi(voiceLang).proVerifyFailed);
+    return false;
   } finally {
     loadingProCaptcha = false;
-    await renderActiveProfileUi();
   }
 }
 
 function buildProVerifyMarkup(ui, { isRecording }) {
-  const captcha = proCaptchaImage
+  // The text is only shown while a fresh captcha is live (i.e. recording):
+  // displaying it earlier would let ElevenLabs' countdown expire unnoticed.
+  const captcha = proCaptchaImage && (isRecording || verifyingProVoice)
     ? `<img class="user-profile-pro-captcha" src="data:${proCaptchaMime};base64,${proCaptchaImage}" alt="${escapeHtml(ui.proVerifyTitle)}" />`
-    : `<p class="user-profile-note">${escapeHtml(ui.proVerifyLoading)}</p>`;
+    : loadingProCaptcha
+      ? `<p class="user-profile-note">${escapeHtml(ui.proVerifyLoading)}</p>`
+      : `<p class="user-profile-note">${escapeHtml(ui.proVerifyIdleHint)}</p>`;
 
   return `
     <p class="user-profile-note user-profile-pro-copy">${escapeHtml(ui.proVerifyCopy)}</p>
@@ -1197,7 +1195,7 @@ function buildProVerifyMarkup(ui, { isRecording }) {
           </button>
         </div>
       </div>
-      ` : proCaptchaImage ? `
+      ` : !loadingProCaptcha ? `
       <div class="user-profile-mic-action">
         <div class="user-profile-mic-slot lang-bar-rect-slot">
           <button type="button" class="user-profile-record-mic user-profile-record-mic--boxed" id="user-voice-record-btn"
@@ -1294,7 +1292,6 @@ async function renderVoiceSamplesPage() {
         ${buildProVerifyMarkup(ui, { isRecording })}
       `;
       bindVoiceRecordingControls(page);
-      void ensureProCaptcha();
     } else {
       const busy = submittingProVoice;
       const prompt = resolveVoicePrompt(voiceLang, state.proSampleCount, { pro: true });
@@ -1895,18 +1892,26 @@ async function startVoiceSampleRecording() {
   // on iOS a resume() issued later is often ignored.
   profileMicWave.primeMicAudioOnGesture();
 
-  // On the verification step a stale captcha would be rejected by ElevenLabs
-  // ("time limit exceeded") and waste an attempt — refresh it before the mic
-  // opens so the user reads the current text.
-  if (proSamplesMode && proVoiceStep(getProfileState(user)) === 'verify') {
-    await ensureProCaptcha();
-    if (!proCaptchaImage) return;
-  }
+  const isVerifyStep = proSamplesMode && proVoiceStep(getProfileState(user)) === 'verify';
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
     });
+
+    // The verification text is requested only now, with the mic already live:
+    // ElevenLabs' countdown starts at this request, so the user must be able
+    // to start reading the very moment the text appears.
+    if (isVerifyStep) {
+      const fetching = fetchFreshProCaptcha();
+      await renderActiveProfileUi(); // show the "loading text…" note meanwhile
+      const ready = await fetching;
+      if (!ready) {
+        stream.getTracks().forEach((track) => track.stop());
+        await renderActiveProfileUi();
+        return;
+      }
+    }
     // The wave meter is set up BEFORE the recorder starts, like the dictation
     // flow: on first use iOS may close and recreate the AudioContext to get
     // it running, and doing that mid-recording can starve the MediaRecorder
@@ -2014,8 +2019,8 @@ async function stopVoiceSampleRecording() {
         // Attempts are capped — tell the user when the counter resets.
         toast(ui.proVerifyMaxAttempts.replace('{time}', new Date(data.resetAtMs).toLocaleString()));
       } else if (isVerifyStep) {
-        // Each attempt consumes its captcha: drop the cached image so the
-        // re-render fetches a fresh text for the next try.
+        // Each attempt consumes its captcha: a fresh text will be fetched on
+        // the next record tap.
         proCaptchaImage = '';
         toast(data.error || ui.proVerifyFailed);
         window.setTimeout(() => toast(ui.proVerifyNewText), 2600);
