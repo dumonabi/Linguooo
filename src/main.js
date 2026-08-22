@@ -1,5 +1,5 @@
 import { createLangPicker, hideAllLangPickerCarets } from './lang-picker.js';
-import { listCloneVoiceLanguageCodes, supportsClonedVoice, supportsProVoice, supportsV3OnlyVoice } from './elevenlabs-languages.js';
+import { listCloneVoiceLanguageCodes, supportsClonedVoice, supportsV3OnlyVoice } from './elevenlabs-languages.js';
 import { headIsStable, splitSpeechText } from './speech-chunks.js';
 import { createTypingCaret, measureCharCell, positionBlockCaret } from './caret-style.js';
 import { CHAMELEON_LOGO_SVG } from './chameleon-logo.js';
@@ -24,7 +24,6 @@ import {
 } from './pending-audio.js';
 import { bindKeepWarm } from './keep-warm.js';
 import { initChat, isChatMode, sendChatMessage } from './chat.js';
-import { maybeCollectVoiceSample } from './voice-match.js';
 import { registerPwa } from './pwa.js';
 
 const STORAGE_KEY = 'lingo-languages';
@@ -63,8 +62,8 @@ const state = {
 
 let playbackEpoch = 0;
 let activePlayback = null;
-// On-demand Professional Voice Clone playback, independent from the fast
-// path: { audio, messageId }.
+// On-demand my-voice (v3) playback, independent from the fast path:
+// { audio, messageId }.
 let proPlayback = null;
 let speakChain = Promise.resolve();
 let latestTranslationRequest = 0;
@@ -135,13 +134,6 @@ function isPersonalVoiceReady() {
   return Boolean(getStoredUser()?.voiceReady);
 }
 
-// True only when a Professional Voice Clone (the 30-minute training) is
-// actually ready — the instant 90-second clone does not count here.
-function isProVoiceReady() {
-  if (state.user?.proVoiceReady) return true;
-  return Boolean(getStoredUser()?.proVoiceReady);
-}
-
 function speakModeForLang(lang) {
   if (!lang || !isPersonalVoiceReady()) return 'default';
   if (!supportsClonedVoice(lang)) return 'default';
@@ -153,34 +145,24 @@ function speakModeForMessage(msg) {
 }
 
 // Which premium on-demand audio the premium button offers for this message:
-// 'pro'  — Professional Voice Clone on multilingual v2 (flash-set languages);
-//          only offered when the PVC is actually trained — with just the
-//          instant clone the fast audio already speaks in the user's voice.
 // 'v3'   — instant clone on eleven_v3, for languages flash cannot clone
 //          (e.g. Thai); needs the user's voice profile
-// null   — no premium option for this language/profile
+// null   — no premium option for this language/profile (for flash-set
+//          languages the fast audio already speaks in the user's voice)
 function premiumAudioQuality(msg) {
-  if (supportsProVoice(msg.targetLanguage) && isProVoiceReady()) return 'pro';
   if (supportsV3OnlyVoice(msg.targetLanguage) && isPersonalVoiceReady()) return 'v3';
   return null;
 }
 
-// The premium button face tells the truth about which voice it plays: "PRO"
-// for the trained Professional Voice Clone, a person-with-waves symbol for
-// the instant clone rendered on the slow v3 model (e.g. Thai).
+// The premium button plays the user's instant clone on the slow v3 model:
+// a person-with-waves symbol.
 const MY_VOICE_BTN_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/><path d="M17.5 8.5c0 1.02-.31 1.96-.84 2.74l1.45 1.45C19 11.5 19.5 10.06 19.5 8.5s-.5-3-1.39-4.19l-1.45 1.45c.53.78.84 1.72.84 2.74z"/><path d="M20.56 2.44l-1.43 1.43C20.16 5.14 20.75 6.75 20.75 8.5s-.59 3.36-1.62 4.63l1.43 1.43C21.93 12.94 22.75 10.81 22.75 8.5s-.82-4.44-2.19-6.06z"/></svg>';
 
 function syncPremiumAudioButton(btn, quality) {
   if (!btn || !quality) return;
-  if (quality === 'v3') {
-    btn.innerHTML = MY_VOICE_BTN_SVG;
-    btn.title = 'My voice (slower)';
-    btn.setAttribute('aria-label', 'Play in my voice (slower)');
-  } else {
-    btn.innerHTML = '<span class="pro-audio-label">PRO</span>';
-    btn.title = 'Pro voice';
-    btn.setAttribute('aria-label', 'Pro voice');
-  }
+  btn.innerHTML = MY_VOICE_BTN_SVG;
+  btn.title = 'My voice (slower)';
+  btn.setAttribute('aria-label', 'Play in my voice (slower)');
 }
 
 function syncMessageAudioCache(msg) {
@@ -347,9 +329,9 @@ function hideAudioActions(message) {
 }
 
 function revealAudioActions(message) {
-  // The playback controls need the fast audio, but the PRO button generates
-  // its own audio on demand — it must appear even when the fast generation
-  // failed, so the user's voice stays reachable (e.g. v3 for Thai).
+  // The playback controls need the fast audio, but the my-voice button
+  // generates its own audio on demand — it must appear even when the fast
+  // generation failed, so the user's voice stays reachable (e.g. v3 for Thai).
   const hasAudio = Boolean(message?.audioUrl);
   const premiumQuality = message ? premiumAudioQuality(message) : null;
   const premium = Boolean(premiumQuality);
@@ -401,7 +383,7 @@ function startBackgroundAudio(message) {
 
   void prefetchAudio(message).finally(() => {
     if (message.id !== state.latestMessageId) return;
-    // Reveal even without the fast audio: the PRO button still applies.
+    // Reveal even without the fast audio: the my-voice button still applies.
     revealAudioActions(message);
   });
 }
@@ -869,8 +851,8 @@ function stopProPlayback() {
 }
 
 // Fetches (once) and caches the premium render of this message in the user's
-// own voice: the trained PVC, or the instant clone on v3 for languages like
-// Thai. Returns null when no premium option applies to this message.
+// own voice: the instant clone on v3 for languages like Thai. Returns null
+// when no premium option applies to this message.
 async function ensurePremiumAudioUrl(msg) {
   const quality = premiumAudioQuality(msg);
   if (!quality) return null;
@@ -885,9 +867,9 @@ async function ensurePremiumAudioUrl(msg) {
   return msg._proAudioUrl;
 }
 
-// On-demand Professional Voice Clone audio for this exact text. Fetched only
-// when the button is pressed (PVC on multilingual v2 is slower and pricier),
-// cached on the message, and completely separate from the fast audio.
+// On-demand my-voice audio for this exact text. Fetched only when the button
+// is pressed (the v3 model is slower and pricier), cached on the message, and
+// completely separate from the fast audio.
 async function toggleProAudio(msg, btn) {
   acknowledgeActionButton(btn);
   if (btn?.dataset.busy === '1') return;
@@ -3202,9 +3184,6 @@ async function acceptRecording({ autoLimit = false } = {}) {
     }
 
     appendToDraft(transcript);
-    // If this dictation sounds like the profile owner, quietly add it to the
-    // pro-voice sample bank (checked on-device, uploaded in the background).
-    maybeCollectVoiceSample(blob, mimeType, recordingMs);
   } finally {
     state.stoppingRecording = false;
     updateComposeState();
@@ -3299,9 +3278,9 @@ async function shareClonedAudio(msg, btn) {
       return;
     }
 
-    // Share the user's own voice whenever possible: the trained PVC or, for
-    // v3-only languages (e.g. Thai), the instant clone. The generic fast
-    // audio only ships when no personal render is available.
+    // Share the user's own voice whenever possible: for v3-only languages
+    // (e.g. Thai), the instant clone on v3. The generic fast audio only
+    // ships when no personal render is available.
     let blob = null;
     try {
       const premiumUrl = await ensurePremiumAudioUrl(msg);
@@ -3394,8 +3373,8 @@ function createMessageCard(msg) {
         </div>
       </div>
       <div class="message-footer-actions${audioActionsClass}"${hideFooter ? ' hidden' : ''}>
-        <button type="button" class="icon-btn pro-audio-btn"${showProBtn ? '' : ' hidden'} title="Pro voice" aria-label="Pro voice">
-          <span class="pro-audio-label">PRO</span>
+        <button type="button" class="icon-btn pro-audio-btn"${showProBtn ? '' : ' hidden'} title="My voice (slower)" aria-label="Play in my voice (slower)">
+          ${MY_VOICE_BTN_SVG}
         </button>
         <div class="message-playback-slot"${hasAudio ? '' : ' hidden'}>
           <div class="message-playback-side message-playback-side-left">

@@ -1852,9 +1852,9 @@ html.user-profile-menu-open body {
   animation: listenBtnReveal 0.35s ease;
 }
 
-/* On-demand Professional Voice Clone playback: a "PRO" badge on the left of
-   the footer, symmetric with the share-audio button on the right. Amber
-   while the (slower) pro generation is in flight, filled while playing. */
+/* On-demand my-voice (v3) playback: a person-with-waves symbol on the left
+   of the footer, symmetric with the share-audio button on the right. Amber
+   while the (slower) generation is in flight, lit while playing. */
 .message-footer-actions .pro-audio-btn {
   grid-column: 1;
   justify-self: start;
@@ -1875,20 +1875,6 @@ html.user-profile-menu-open body {
   animation: listenBtnReveal 0.35s ease;
 }
 
-.pro-audio-label {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.18em 0.5em;
-  border: 1.5px solid currentColor;
-  border-radius: 8px;
-  font-family: var(--font);
-  font-weight: 800;
-  font-size: calc(var(--page-symbol-size) * 0.34);
-  letter-spacing: 0.06em;
-  line-height: 1;
-}
-
 .pro-audio-btn.is-loading,
 .share-audio-btn.is-loading {
   pointer-events: none;
@@ -1901,14 +1887,6 @@ html.user-profile-menu-open body {
   50% { opacity: 0.45; }
 }
 
-.pro-audio-btn.is-playing .pro-audio-label {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #04140a;
-}
-
-/* The instant-clone variant shows a person-with-waves symbol instead of the
-   PRO badge; while playing it lights up in the accent color. */
 .pro-audio-btn.is-playing svg {
   color: var(--accent);
 }
@@ -4686,164 +4664,8 @@ html.user-profile-menu-open body {
   color: var(--text);
 }
 
-/* PRO voice mode (Professional Voice Cloning sample collection): toggled
-   from the samples page, reuses the same recorder plus file uploads. */
-.user-profile-voice-mode-row {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-  margin-bottom: 0.4rem;
-}
-
-.user-profile-voice-mode-btn {
-  padding: 0.35rem 0.9rem;
-  border: 1px solid rgba(42, 235, 108, 0.45);
-  border-radius: 0;
-  background: var(--surface);
-  color: var(--accent-light);
-  font: inherit;
-  font-size: calc(var(--ui-text-size) * 0.85);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
-}
-
-.user-profile-voice-mode-btn.is-pro {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #04140a;
-}
-
-.user-profile-samples-progress--pro .user-profile-duration-total--ready .user-profile-duration-total-value,
 .user-profile-duration-total--ready .user-profile-duration-total-value {
   color: var(--accent-light);
-}
-
-.user-profile-pro-copy {
-  color: var(--text-muted, rgba(255, 255, 255, 0.72));
-}
-
-.user-profile-pro-submitted {
-  color: var(--accent-light);
-}
-
-.user-profile-pro-remaining {
-  color: #fff;
-  font-weight: 600;
-}
-
-.user-profile-pro-actions {
-  display: flex;
-  align-items: stretch;
-  gap: 6px;
-  width: 100%;
-  margin-top: 0.65rem;
-}
-
-/* Auto-collect toggle: dictations matching the user's voiceprint feed the
-   PRO sample bank on their own. */
-.user-profile-auto-collect {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  margin-top: 1rem;
-  color: #fff;
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.user-profile-auto-collect input {
-  width: 1.15rem;
-  height: 1.15rem;
-  accent-color: var(--accent, #22c55e);
-  cursor: pointer;
-}
-
-.user-profile-auto-collect-hint {
-  margin-top: 0.35rem;
-  color: var(--text-muted, rgba(255, 255, 255, 0.72));
-}
-
-.user-profile-pro-btn {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: calc(var(--page-button-height) * 0.62);
-  padding: 0.45rem 0.6rem;
-  border: 1px solid rgba(42, 235, 108, 0.45);
-  border-radius: 0;
-  background: var(--surface);
-  color: var(--accent-light);
-  font: inherit;
-  font-size: calc(var(--ui-text-size) * 0.85);
-  font-weight: 600;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
-}
-
-.user-profile-pro-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.user-profile-pro-btn--submit:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #04140a;
-}
-
-.user-profile-pro-btn--danger {
-  flex: 0 0 auto;
-}
-
-.user-profile-pro-btn--danger .user-profile-record-again-icon {
-  width: calc(var(--page-symbol-size) * 0.6);
-  height: calc(var(--page-symbol-size) * 0.6);
-}
-
-.user-profile-pro-btn:not(:disabled):active {
-  transform: scale(0.97);
-}
-
-/* PVC ownership verification: the captcha image with lines to read aloud. */
-.user-profile-pro-captcha {
-  display: block;
-  width: 100%;
-  margin: 0.5rem 0;
-  border: 1px solid rgba(42, 235, 108, 0.45);
-  background: #fff;
-}
-
-/* PVC training progress shown while ElevenLabs fine-tunes the voice. */
-.user-profile-pro-training {
-  width: 100%;
-  margin-top: 0.65rem;
-}
-
-.user-profile-pro-training-bar {
-  width: 100%;
-  height: 10px;
-  border: 1px solid rgba(42, 235, 108, 0.45);
-  background: var(--surface);
-}
-
-.user-profile-pro-training-fill {
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.4s ease;
-}
-
-.user-profile-pro-training-pct {
-  margin-top: 0.35rem;
-  color: var(--accent-light);
-  font-weight: 600;
 }
 
 .user-profile-prompt-text {

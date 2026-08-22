@@ -6,18 +6,13 @@ import {
   writeBuffer,
   writeText,
 } from './persistent-store.js';
+import { deleteElevenLabsVoice } from './elevenlabs.js';
 
 const MAX_PROFILE_SLOT = 11;
 const LEGACY_MIGRATION_SLOT = 1;
 
 const MAX_VOICE_SAMPLES = 6;
 const VOICE_TARGET_DURATION_MS = 90_000;
-
-// Professional Voice Cloning needs far more audio than the instant clone:
-// ElevenLabs recommends at least 30 minutes and accepts up to 3 hours.
-const PRO_MIN_TOTAL_MS = 30 * 60_000;
-const PRO_MAX_TOTAL_MS = 3 * 3_600_000;
-const MAX_PRO_SAMPLES = 400;
 
 // Profile metadata lives in Blob storage, which costs a network round-trip
 // on every read. /api/speak and the TTS warm-up read the profile on each
@@ -51,10 +46,6 @@ function sampleKey(userId, slotNumber, sampleId, ext) {
   return `${slotPrefix(userId, slotNumber)}/samples/${sampleId}.${ext}`;
 }
 
-function proSampleKey(userId, slotNumber, sampleId, ext) {
-  return `${slotPrefix(userId, slotNumber)}/pro-samples/${sampleId}.${ext}`;
-}
-
 function legacyMetaKey(userId) {
   return `voices/${userId}/meta.json`;
 }
@@ -67,17 +58,7 @@ function emptyProfile() {
   return {
     status: 'none',
     elevenlabsVoiceId: null,
-    // Professional Voice Clone (PVC) id, used only by the on-demand pro
-    // audio path; the fast path always uses elevenlabsVoiceId.
-    proVoiceId: null,
-    // PVC voice created and fed with samples but not yet verified/trained.
-    // Promoted to proVoiceId once training finishes.
-    pvcPendingVoiceId: null,
-    // Owner passed the in-app captcha verification; training may be running.
-    pvcVerified: false,
     samples: [],
-    // Long-form samples collected for PVC training (30 min – 3 h total).
-    proSamples: [],
     updatedAt: null,
   };
 }
@@ -98,8 +79,43 @@ function parseMeta(raw) {
     ...emptyProfile(),
     ...parsed,
     samples: Array.isArray(parsed.samples) ? parsed.samples : [],
-    proSamples: Array.isArray(parsed.proSamples) ? parsed.proSamples : [],
   };
+}
+
+// The retired PRO (PVC) feature left pro sample audio and PVC fields behind
+// in stored profiles. Scrub them lazily the first time a profile is read.
+function hasProLeftovers(profile) {
+  return Boolean(
+    (Array.isArray(profile.proSamples) && profile.proSamples.length)
+    || profile.proSamples !== undefined
+    || profile.proVoiceId
+    || profile.pvcPendingVoiceId
+    || profile.pvcVerified,
+  );
+}
+
+async function scrubProLeftovers(userId, slot, profile) {
+  const scrubbed = { ...profile };
+  delete scrubbed.proSamples;
+  delete scrubbed.proVoiceId;
+  delete scrubbed.pvcPendingVoiceId;
+  delete scrubbed.pvcVerified;
+
+  // Remove the orphaned PVC voices from the ElevenLabs account too, so they
+  // stop counting against the plan's voice slots. Best-effort: a failure here
+  // must not block the profile read.
+  for (const voiceId of [profile.proVoiceId, profile.pvcPendingVoiceId]) {
+    if (!voiceId) continue;
+    try {
+      await deleteElevenLabsVoice(voiceId);
+    } catch (err) {
+      console.warn(`Could not delete retired PVC voice ${voiceId}:`, err.message);
+    }
+  }
+
+  await deletePrefix(`${slotPrefix(userId, slot)}/pro-samples/`);
+  await writeMeta(userId, slot, scrubbed);
+  return scrubbed;
 }
 
 async function readMetaFile(key) {
@@ -135,7 +151,7 @@ async function writeMeta(userId, slotNumber, meta) {
   writeProfileCache(metaKey(userId, slotNumber), meta);
 }
 
-export { MAX_VOICE_SAMPLES, VOICE_TARGET_DURATION_MS, PRO_MIN_TOTAL_MS, PRO_MAX_TOTAL_MS };
+export { MAX_VOICE_SAMPLES, VOICE_TARGET_DURATION_MS };
 
 function totalSampleDurationMs(samples) {
   return samples.reduce((sum, sample) => sum + (Number(sample.durationMs) || 0), 0);
@@ -154,7 +170,14 @@ export async function getVoiceProfile(userId, slotNumber) {
     if (migrated) profile = await readMetaFile(key);
   }
 
-  const resolved = profile || emptyProfile();
+  let resolved = profile || emptyProfile();
+  if (profile && hasProLeftovers(profile)) {
+    try {
+      resolved = await scrubProLeftovers(userId, slot, profile);
+    } catch (err) {
+      console.warn('Could not scrub retired pro-voice data:', err.message);
+    }
+  }
   writeProfileCache(key, resolved);
   return resolved;
 }
@@ -172,18 +195,6 @@ export async function listVoiceSampleBuffers(userId, slotNumber) {
   }
 
   return { profile, buffers };
-}
-
-// Audio of one of the user's own (instant-clone) samples — the client uses
-// them to compute the voiceprint that auto-collection compares against.
-export async function readVoiceSampleAudio(userId, slotNumber, sampleId) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  const sample = profile.samples.find((entry) => entry.id === sampleId);
-  if (!sample) return null;
-  const buffer = await readBuffer(sampleKey(userId, slot, sample.id, sample.ext));
-  if (!buffer) return null;
-  return { buffer, mimeType: sample.mimeType || 'audio/webm' };
 }
 
 function extForMime(mimeType = 'audio/webm') {
@@ -227,161 +238,6 @@ export async function addVoiceSample(userId, slotNumber, buffer, mimeType = 'aud
   });
   profile.status = profile.elevenlabsVoiceId ? 'needs_update' : 'collecting';
 
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
-export async function addProVoiceSample(userId, slotNumber, buffer, {
-  mimeType = 'audio/webm',
-  durationMs = null,
-} = {}) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-
-  if (profile.proSamples.length >= MAX_PRO_SAMPLES) {
-    const err = new Error(`You already have ${MAX_PRO_SAMPLES} pro samples`);
-    err.code = 'SAMPLE_LIMIT';
-    throw err;
-  }
-  const existingMs = totalSampleDurationMs(profile.proSamples);
-  if (existingMs >= PRO_MAX_TOTAL_MS) {
-    const err = new Error('You already have 3 hours of pro audio — that is the maximum');
-    err.code = 'DURATION_LIMIT';
-    throw err;
-  }
-
-  const ext = extForMime(mimeType);
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await writeBuffer(proSampleKey(userId, slot, id, ext), buffer, mimeType);
-
-  const safeDurationMs = Number(durationMs);
-  profile.proSamples.push({
-    id,
-    ext,
-    mimeType,
-    createdAt: Date.now(),
-    sizeBytes: buffer.length,
-    ...(Number.isFinite(safeDurationMs) && safeDurationMs > 0
-      ? { durationMs: Math.round(safeDurationMs) }
-      : {}),
-  });
-
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
-// Auto-collected pro samples (dictations that matched the user's voiceprint)
-// keep the bank fresh with a rolling window: when the recommended maximum is
-// reached, the oldest auto-collected clips make room for the new one.
-// Deliberately recorded (manual) takes are never evicted.
-export async function addAutoProVoiceSample(userId, slotNumber, buffer, {
-  mimeType = 'audio/webm',
-  durationMs = null,
-} = {}) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-
-  const safeDurationMs = Math.max(0, Math.round(Number(durationMs) || 0));
-  const overBudget = () =>
-    profile.proSamples.length >= MAX_PRO_SAMPLES
-    || totalSampleDurationMs(profile.proSamples) + safeDurationMs > PRO_MAX_TOTAL_MS;
-
-  const evicted = [];
-  while (overBudget()) {
-    const oldestAuto = profile.proSamples.find((entry) => entry.auto);
-    if (!oldestAuto) break;
-    profile.proSamples = profile.proSamples.filter((entry) => entry.id !== oldestAuto.id);
-    evicted.push(oldestAuto);
-  }
-  if (overBudget()) {
-    const err = new Error('Pro sample bank is full of manual recordings');
-    err.code = 'DURATION_LIMIT';
-    throw err;
-  }
-
-  const ext = extForMime(mimeType);
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  await writeBuffer(proSampleKey(userId, slot, id, ext), buffer, mimeType);
-
-  profile.proSamples.push({
-    id,
-    ext,
-    mimeType,
-    auto: true,
-    createdAt: Date.now(),
-    sizeBytes: buffer.length,
-    ...(safeDurationMs > 0 ? { durationMs: safeDurationMs } : {}),
-  });
-
-  await writeMeta(userId, slot, profile);
-
-  // Delete evicted blobs only after the metadata no longer references them.
-  for (const sample of evicted) {
-    await deleteFile(proSampleKey(userId, slot, sample.id, sample.ext));
-  }
-
-  return profile;
-}
-
-export async function deleteProVoiceSample(userId, slotNumber, sampleId) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  const sample = profile.proSamples.find((entry) => entry.id === sampleId);
-  if (!sample) return null;
-
-  profile.proSamples = profile.proSamples.filter((entry) => entry.id !== sampleId);
-  await deleteFile(proSampleKey(userId, slot, sample.id, sample.ext));
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
-export async function clearAllProVoiceSamples(userId, slotNumber) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-
-  for (const sample of profile.proSamples) {
-    await deleteFile(proSampleKey(userId, slot, sample.id, sample.ext));
-  }
-
-  profile.proSamples = [];
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
-export async function listProVoiceSampleBuffers(userId, slotNumber) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  const buffers = [];
-
-  for (const sample of profile.proSamples) {
-    const buffer = await readBuffer(proSampleKey(userId, slot, sample.id, sample.ext));
-    if (buffer) {
-      buffers.push({
-        id: sample.id,
-        buffer,
-        ext: sample.ext,
-        mimeType: sample.mimeType || 'audio/webm',
-        name: `pro-sample-${sample.id}.${sample.ext}`,
-      });
-    }
-  }
-
-  return { profile, buffers };
-}
-
-export async function savePvcPendingVoice(userId, slotNumber, pvcVoiceId) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  profile.pvcPendingVoiceId = pvcVoiceId || null;
-  profile.pvcVerified = false;
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
-export async function savePvcVerified(userId, slotNumber) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  profile.pvcVerified = true;
   await writeMeta(userId, slot, profile);
   return profile;
 }
@@ -447,42 +303,21 @@ export async function clearVoiceClone(userId, slotNumber) {
   return profile;
 }
 
-export async function saveProVoice(userId, slotNumber, proVoiceId) {
-  const slot = validateProfileSlot(slotNumber);
-  const profile = await getVoiceProfile(userId, slot);
-  profile.proVoiceId = proVoiceId || null;
-  await writeMeta(userId, slot, profile);
-  return profile;
-}
-
 export function resolveVoiceId(user, voiceProfile) {
   return voiceProfile?.elevenlabsVoiceId || user?.elevenlabsVoiceId || null;
 }
 
-export function resolveProVoiceId(voiceProfile) {
-  return voiceProfile?.proVoiceId || process.env.ELEVENLABS_PRO_VOICE_ID?.trim() || null;
-}
-
 export function voiceProfileSummary(voiceProfile) {
   const totalDurationMs = totalSampleDurationMs(voiceProfile.samples);
-  const proSamples = voiceProfile.proSamples || [];
-  const proTotalDurationMs = totalSampleDurationMs(proSamples);
   return {
     status: voiceProfile.status,
     sampleCount: voiceProfile.samples.length,
     voiceReady: Boolean(voiceProfile.elevenlabsVoiceId),
-    proVoiceReady: Boolean(resolveProVoiceId(voiceProfile)),
     elevenlabsConfigured: true,
     minSamples: MAX_VOICE_SAMPLES,
     maxSamples: MAX_VOICE_SAMPLES,
     canRecordMore: voiceProfile.samples.length < MAX_VOICE_SAMPLES,
     totalDurationMs,
     targetDurationMs: VOICE_TARGET_DURATION_MS,
-    proSampleCount: proSamples.length,
-    proTotalDurationMs,
-    proMinTotalMs: PRO_MIN_TOTAL_MS,
-    proMaxTotalMs: PRO_MAX_TOTAL_MS,
-    pvcSubmitted: Boolean(voiceProfile.pvcPendingVoiceId),
-    pvcVerified: Boolean(voiceProfile.pvcVerified),
   };
 }

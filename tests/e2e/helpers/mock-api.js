@@ -29,14 +29,6 @@ export async function setupApiMocks(page, options = {}) {
   let translateCount = 0;
   let transcribeCount = 0;
 
-  // Stateful chat mock shared with the test: pushing into `messages` makes
-  // the app's next poll pick the message up, like a real incoming message.
-  // Auto-collected voice sample uploads land here so tests can assert on
-  // them (or on their absence).
-  const voice = {
-    proSampleRequests: [],
-  };
-
   // Stateful profile settings, like the real server: PUTs merge slot names
   // last-write-wins and tests can preseed "another device's" rename.
   const settings = {
@@ -161,12 +153,6 @@ export async function setupApiMocks(page, options = {}) {
             canRecordMore: true,
             totalDurationMs: 0,
             targetDurationMs: 90000,
-            proSampleCount: 0,
-            proTotalDurationMs: 0,
-            proMinTotalMs: 1800000,
-            proMaxTotalMs: 10800000,
-            pvcSubmitted: false,
-            proSamples: [],
             ...voiceProfileOverrides,
           },
         }),
@@ -233,33 +219,7 @@ export async function setupApiMocks(page, options = {}) {
           canRecordMore: true,
           totalDurationMs: 0,
           targetDurationMs: 90000,
-          proSampleCount: 0,
-          proTotalDurationMs: 0,
-          proMinTotalMs: 1800000,
-          proMaxTotalMs: 10800000,
-          pvcSubmitted: false,
-          proSamples: [],
           ...voiceProfileOverrides,
-        }),
-      });
-    }
-
-    if (path === '/api/voice/pro-samples' && route.request().method() === 'POST') {
-      const raw = route.request().postDataBuffer()?.toString('latin1') || '';
-      voice.proSampleRequests.push({
-        auto: raw.includes('name="auto"'),
-        slot: url.searchParams.get('slot'),
-      });
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          ok: true,
-          sampleId: `sample-${voice.proSampleRequests.length}`,
-          proSampleCount: voice.proSampleRequests.length,
-          proTotalDurationMs: 0,
-          proMinTotalMs: 1800000,
-          proMaxTotalMs: 10800000,
         }),
       });
     }
@@ -469,7 +429,7 @@ export async function setupApiMocks(page, options = {}) {
     return route.fulfill({ status: 404, body: 'Not found' });
   });
 
-  return { chat, voice, settings };
+  return { chat, settings };
 }
 
 function defaultConverseResponse(index) {

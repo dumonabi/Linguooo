@@ -1,6 +1,7 @@
-// On-demand Professional Voice Clone (PVC) audio: a PRO button next to each
-// translation that fetches a high-fidelity render of that exact text without
-// touching the fast audio path.
+// On-demand my-voice (v3) audio: for languages the fast flash model cannot
+// clone (e.g. Thai), a button next to each translation fetches a render of
+// that exact text in the user's instant-clone voice without touching the
+// fast audio path.
 import { test, expect } from '@playwright/test';
 import { MEDIA_MOCK_INIT_SCRIPT } from './helpers/mock-media.js';
 import { setupApiMocks, resetClientState } from './helpers/mock-api.js';
@@ -53,51 +54,6 @@ test.beforeEach(async ({ page }) => {
   await setupApiMocks(page);
 });
 
-test('the PRO button requests pro-quality audio for that text on demand', async ({ page }) => {
-  // The PRO badge only appears when a Professional Voice Clone is trained.
-  await setupApiMocks(page, {
-    user: { voiceReady: true, proVoiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
-    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, proVoiceReady: true, elevenlabsConfigured: true },
-  });
-
-  const speakRequests = [];
-  await page.route('**/api/speak', async (route) => {
-    speakRequests.push(route.request().postDataJSON());
-    return route.fulfill({
-      status: 200,
-      contentType: 'audio/mpeg',
-      body: Buffer.from(new Uint8Array([0xff, 0xfb, 0x90, 0x00])),
-    });
-  });
-
-  await translateOnce(page);
-
-  const proBtn = page.locator('.message-card .pro-audio-btn');
-  await expect(proBtn).toBeVisible({ timeout: 8000 });
-  // With a trained PVC the button reads PRO.
-  await expect(proBtn.locator('.pro-audio-label')).toHaveText('PRO');
-
-  const fastRequests = speakRequests.length;
-  expect(fastRequests).toBeGreaterThanOrEqual(1);
-  expect(speakRequests.every((body) => body.quality !== 'pro')).toBe(true);
-
-  await proBtn.click();
-  await expect(proBtn).toHaveClass(/is-playing/, { timeout: 8000 });
-
-  const proRequests = speakRequests.filter((body) => body.quality === 'pro');
-  expect(proRequests.length).toBe(1);
-  const translated = await page.locator('.message-translated-text').textContent();
-  expect(proRequests[0].text).toBe(translated.trim());
-
-  // A second press stops pro playback; a third replays from the cached blob
-  // without another network request.
-  await proBtn.click();
-  await expect(proBtn).not.toHaveClass(/is-playing/);
-  await proBtn.click();
-  await expect(proBtn).toHaveClass(/is-playing/, { timeout: 8000 });
-  expect(speakRequests.filter((body) => body.quality === 'pro').length).toBe(1);
-});
-
 test('languages outside the flash set offer on-demand v3 audio in the user voice', async ({ page }) => {
   // Thai cannot be cloned on the fast flash model; with a voice profile
   // ready, the premium button requests the slow eleven_v3 render instead.
@@ -128,8 +84,7 @@ test('languages outside the flash set offer on-demand v3 audio in the user voice
 
   const proBtn = page.locator('.message-card .pro-audio-btn');
   await expect(proBtn).toBeVisible({ timeout: 8000 });
-  // With only the instant clone the button shows the my-voice symbol, not PRO.
-  await expect(proBtn.locator('.pro-audio-label')).toHaveCount(0);
+  // The button shows the my-voice symbol.
   await expect(proBtn.locator('svg')).toBeVisible();
   await expect(proBtn).toHaveAttribute('title', 'My voice (slower)');
 
@@ -141,12 +96,20 @@ test('languages outside the flash set offer on-demand v3 audio in the user voice
   expect(v3Requests[0].text).toBe('สวัสดีเพื่อน');
   expect(v3Requests[0].lang).toBe('th');
   // The fast audio path never uses the slow model.
-  expect(speakRequests.some((body) => body.quality === 'pro')).toBe(false);
+  expect(speakRequests.every((body) => !body.quality || body.quality === 'v3')).toBe(true);
+
+  // A second press stops playback; a third replays from the cached blob
+  // without another network request.
+  await proBtn.click();
+  await expect(proBtn).not.toHaveClass(/is-playing/);
+  await proBtn.click();
+  await expect(proBtn).toHaveClass(/is-playing/, { timeout: 8000 });
+  expect(speakRequests.filter((body) => body.quality === 'v3').length).toBe(1);
 });
 
-test('without a trained pro voice the premium button stays hidden for flash languages', async ({ page }) => {
-  // English is cloned by the fast model already, so with just the 90-second
-  // instant clone there is nothing extra to offer — no premium button.
+test('flash-set languages never show the premium button', async ({ page }) => {
+  // English is cloned by the fast model already, so there is nothing extra
+  // to offer — no premium button.
   await setupApiMocks(page, {
     user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
     voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, elevenlabsConfigured: true },
@@ -165,7 +128,7 @@ test('without a trained pro voice the premium button stays hidden for flash lang
 });
 
 test('the v3 voice option still appears when the fast audio generation fails', async ({ page }) => {
-  // The PRO button generates its own audio on demand, so a broken fast
+  // The my-voice button generates its own audio on demand, so a broken fast
   // (generic-voice) render must not hide the user's-voice option.
   await setupApiMocks(page, {
     user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
@@ -346,21 +309,28 @@ test('sharing falls back to the fast audio when there is no personal voice', asy
   expect(speakRequests.every((body) => !body.quality)).toBe(true);
 });
 
-test('a missing pro voice surfaces the server guidance instead of falling back', async ({ page }) => {
-  // The client believes the PVC is ready but the server disagrees (e.g. the
-  // training was reset) — the guidance must reach the user, no fallback.
+test('a missing personal voice surfaces the server guidance instead of falling back', async ({ page }) => {
+  // The client believes the voice is ready but the server disagrees (e.g.
+  // the samples were reset) — the guidance must reach the user, no fallback.
   await setupApiMocks(page, {
-    user: { voiceReady: true, proVoiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
-    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, proVoiceReady: true, elevenlabsConfigured: true },
+    user: { voiceReady: true, voiceSampleCount: 6, voiceStatus: 'ready' },
+    voiceProfile: { status: 'ready', sampleCount: 6, voiceReady: true, elevenlabsConfigured: true },
+    onConverse: () => ({
+      rawText: 'hola amigo',
+      detectedLanguage: 'es',
+      sourceText: 'hola amigo',
+      translatedText: 'สวัสดีเพื่อน',
+      targetLanguage: 'th',
+    }),
   });
 
   await page.route('**/api/speak', async (route) => {
     const body = route.request().postDataJSON();
-    if (body.quality === 'pro') {
+    if (body.quality === 'v3') {
       return route.fulfill({
         status: 409,
         contentType: 'application/json',
-        body: JSON.stringify({ error: 'Pro voice not ready — create a Professional Voice Clone in ElevenLabs (Creator plan) and it will be linked automatically' }),
+        body: JSON.stringify({ error: 'Personal voice not ready — set up your voice profile first' }),
       });
     }
     return route.fulfill({
@@ -376,6 +346,6 @@ test('a missing pro voice surfaces the server guidance instead of falling back',
   await expect(proBtn).toBeVisible({ timeout: 8000 });
   await proBtn.click();
 
-  await expect(page.locator('#toast')).toContainText('Pro voice not ready', { timeout: 8000 });
+  await expect(page.locator('#toast')).toContainText('Personal voice not ready', { timeout: 8000 });
   await expect(proBtn).not.toHaveClass(/is-playing/);
 });

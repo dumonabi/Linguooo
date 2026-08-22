@@ -14,13 +14,6 @@ export const CLONED_VOICE_LANGUAGE_CODES = new Set([
   'ta', 'tl', 'tr', 'uk', 'vi', 'zh',
 ]);
 
-// The on-demand "pro" voice runs Professional Voice Cloning on multilingual
-// v2 (the model PVC is fine-tuned on), which supports the flash set minus
-// hu/no/vi.
-export const PRO_VOICE_LANGUAGE_CODES = new Set(
-  [...CLONED_VOICE_LANGUAGE_CODES].filter((code) => !['hu', 'no', 'vi'].includes(code)),
-);
-
 // eleven_v3 supports 74 languages (ISO 639-1 codes). It is much slower than
 // flash, so it only powers the optional on-demand cloned audio for languages
 // the flash model cannot clone (e.g. Thai) — never the fast path.
@@ -66,11 +59,6 @@ export function resolveCloneVoiceModel(langCode) {
 
 export function supportsClonedVoice(langCode) {
   return Boolean(resolveCloneVoiceModel(langCode));
-}
-
-export function supportsProVoice(langCode) {
-  const mapped = resolveCloneVoiceLanguage(langCode);
-  return Boolean(mapped && PRO_VOICE_LANGUAGE_CODES.has(mapped));
 }
 
 // Languages where the only way to hear the user's cloned voice is the slow
