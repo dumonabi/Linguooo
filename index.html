@@ -28,10 +28,6 @@
         </div>
       </section>
 
-      <section class="contact-bar" id="contact-bar" aria-label="Contacts">
-        <div class="contact-strip" id="contact-strip"></div>
-      </section>
-
       <section class="compose-box" id="compose-box">
         <div class="compose-input-wrap" id="compose-input-wrap">
           <textarea
@@ -197,13 +193,9 @@
             <svg class="compose-translate-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
               <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75l1.13 3h2l-4.37-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z" />
             </svg>
-            <svg class="compose-send-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
-            </svg>
           </button>
         </div>
         <div class="message-panel-body" id="current-message"></div>
-        <div class="chat-thread" id="chat-thread" hidden></div>
       </section>
 
       <div class="pending-banner" id="pending-banner" hidden>
@@ -216,74 +208,6 @@
     </div>
 
     <div class="toast" id="toast" hidden></div>
-
-    <div class="chat-add-overlay" id="chat-add-overlay" hidden>
-      <div class="chat-add-card">
-        <button type="button" class="chat-add-close" id="chat-add-close" aria-label="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-        <h2 class="chat-add-title">Add contact</h2>
-        <p class="chat-add-hint">Share your code so people can add you:</p>
-        <div class="chat-my-code-row">
-          <span class="chat-my-code" id="chat-my-code"></span>
-          <button type="button" class="chat-my-code-copy" id="chat-my-code-copy" aria-label="Copy my code" title="Copy my code">
-            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
-          </button>
-          <button type="button" class="chat-my-code-copy chat-my-code-emoji" id="chat-my-code-emoji" aria-label="Copy my code hidden in an emoji" title="Copy as emoji">&#x1F60A;</button>
-        </div>
-        <p class="chat-add-hint">Or paste the code — or the emoji that hides it — of the person you want to chat with:</p>
-        <form id="chat-add-form" class="chat-add-form">
-          <input
-            type="text"
-            id="chat-add-code"
-            class="chat-add-input"
-            spellcheck="false"
-            autocomplete="off"
-            autocapitalize="off"
-            placeholder="Contact code or emoji…"
-            maxlength="40"
-          />
-          <input
-            type="text"
-            id="chat-add-name"
-            class="chat-add-input chat-add-name"
-            autocomplete="off"
-            placeholder="Name (optional)…"
-            maxlength="24"
-          />
-          <button type="submit" class="chat-add-submit" id="chat-add-submit">Add</button>
-        </form>
-        <p class="chat-add-hint chat-add-footnote">Messages disappear after 48 hours.</p>
-      </div>
-    </div>
-
-    <!-- Rename contact: opens when you tap the already-selected contact. -->
-    <div class="chat-add-overlay" id="chat-rename-overlay" hidden>
-      <div class="chat-add-card">
-        <button type="button" class="chat-add-close" id="chat-rename-close" aria-label="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-        <h2 class="chat-add-title">Rename contact</h2>
-        <p class="chat-add-hint" id="chat-rename-hint">Only you see this name.</p>
-        <form id="chat-rename-form" class="chat-add-form">
-          <input
-            type="text"
-            id="chat-rename-input"
-            class="chat-add-input chat-add-name"
-            autocomplete="off"
-            placeholder="Name…"
-            maxlength="24"
-          />
-          <button type="submit" class="chat-add-submit" id="chat-rename-save">Save</button>
-        </form>
-      </div>
-    </div>
 
     <div class="auth-gate" id="auth-gate" hidden>
       <div class="auth-card">

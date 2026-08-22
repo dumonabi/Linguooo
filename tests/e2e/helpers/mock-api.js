@@ -22,8 +22,6 @@ export async function setupApiMocks(page, options = {}) {
     onConverse,
     onTranslate,
     onTranscribe,
-    onChatSend,
-    chat: chatOptions = {},
   } = options;
   let converseCount = 0;
   let translateCount = 0;
@@ -43,25 +41,6 @@ export async function setupApiMocks(page, options = {}) {
       ...(options.profileSettings ?? {}),
     },
     puts: [],
-  };
-
-  const chat = {
-    code: chatOptions.code ?? 'MyCode11',
-    userId: chatOptions.userId ?? 'test-user',
-    // Codes that can be added as contacts, keyed by code.
-    users: { Friend12: { id: 'contact-1', name: 'Ana' }, ...(chatOptions.users ?? {}) },
-    // Cloned so a test that renames a contact never mutates a fixture
-    // object shared with other tests.
-    contacts: (chatOptions.contacts ?? []).map((c) => ({ ...c })),
-    messages: [...(chatOptions.messages ?? [])],
-    sendCount: 0,
-    pushIncoming(msg) {
-      this.messages.push({
-        id: `m-in-${this.messages.length}`,
-        createdAt: Date.now(),
-        ...msg,
-      });
-    },
   };
 
   await page.route('**/api/**', async (route) => {
@@ -307,129 +286,10 @@ export async function setupApiMocks(page, options = {}) {
       });
     }
 
-    if (path === '/api/contacts') {
-      if (route.request().method() === 'POST') {
-        let body = {};
-        try {
-          body = JSON.parse(route.request().postData() || '{}');
-        } catch {
-          body = {};
-        }
-        const target = chat.users[body.code];
-        if (!target) {
-          return route.fulfill({
-            status: 404,
-            contentType: 'application/json',
-            body: JSON.stringify({ error: 'No user found with that code' }),
-          });
-        }
-        // The alias picked when adding wins over the profile name, like the
-        // real server does.
-        const name = String(body.name || '').trim().slice(0, 24) || target.name;
-        if (!chat.contacts.some((c) => c.id === target.id)) {
-          chat.contacts.push({ id: target.id, name, code: body.code });
-        }
-        return route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ ok: true, contact: { id: target.id, name, code: body.code } }),
-        });
-      }
-      const contacts = chat.contacts.map((c) => {
-        const last = chat.messages.filter((m) => m.from === c.id || m.to === c.id).at(-1);
-        return {
-          ...c,
-          lastMessageId: last?.id ?? null,
-          lastMessageFrom: last?.from ?? null,
-          lastMessageAt: last?.createdAt ?? null,
-        };
-      });
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ code: chat.code, userId: chat.userId, contacts }),
-      });
-    }
-
-    if (path.startsWith('/api/contacts/') && route.request().method() === 'PATCH') {
-      const targetId = decodeURIComponent(path.slice('/api/contacts/'.length));
-      let body = {};
-      try {
-        body = JSON.parse(route.request().postData() || '{}');
-      } catch {
-        body = {};
-      }
-      const entry = chat.contacts.find((c) => c.id === targetId);
-      if (!entry) {
-        return route.fulfill({
-          status: 404,
-          contentType: 'application/json',
-          body: JSON.stringify({ error: 'Not one of your contacts' }),
-        });
-      }
-      const profileName = Object.values(chat.users).find((u) => u.id === targetId)?.name || entry.name;
-      entry.name = String(body.name || '').trim().slice(0, 24) || profileName;
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ ok: true, contact: { id: entry.id, name: entry.name, code: entry.code } }),
-      });
-    }
-
-    if (path === '/api/chat/send') {
-      let body = {};
-      try {
-        body = JSON.parse(route.request().postData() || '{}');
-      } catch {
-        body = {};
-      }
-      const index = chat.sendCount++;
-      const payload = onChatSend ? await onChatSend(route.request(), index) : null;
-      const status = payload?.__status ?? 200;
-      if (status !== 200) {
-        return route.fulfill({
-          status,
-          contentType: 'application/json',
-          body: JSON.stringify({ error: payload?.error || 'Request failed' }),
-        });
-      }
-      const message = {
-        id: `m-sent-${index}`,
-        from: chat.userId,
-        to: body.to,
-        text: payload?.text ?? `[${body.lang2}] ${body.text}`,
-        sourceText: body.text,
-        sourceLang: body.lang1,
-        targetLang: body.lang2,
-        createdAt: Date.now(),
-      };
-      chat.messages.push(message);
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ ok: true, message }),
-      });
-    }
-
-    if (path === '/api/chat/messages') {
-      const withId = url.searchParams.get('with');
-      const after = url.searchParams.get('after');
-      let msgs = chat.messages.filter((m) => m.from === withId || m.to === withId);
-      if (after) {
-        const i = msgs.findIndex((m) => m.id === after);
-        if (i >= 0) msgs = msgs.slice(i + 1);
-      }
-      return route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ messages: msgs }),
-      });
-    }
-
     return route.fulfill({ status: 404, body: 'Not found' });
   });
 
-  return { chat, settings };
+  return { settings };
 }
 
 function defaultConverseResponse(index) {

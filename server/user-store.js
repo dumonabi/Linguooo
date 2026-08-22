@@ -40,11 +40,6 @@ async function persistUsers(users) {
   await writeText(REGISTRY_KEY, `${JSON.stringify(users, null, 2)}\n`);
 }
 
-export async function findStoredUserById(id) {
-  const users = await readUserRegistry();
-  return users.find((user) => user.id === id) || null;
-}
-
 export async function addStoredUser(record) {
   const users = await readUserRegistry();
   users.push(record);

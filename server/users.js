@@ -4,7 +4,6 @@ import { wordlist } from '@scure/bip39/wordlists/english.js';
 import {
   addStoredUser,
   ensureUserRegistryLoaded,
-  findStoredUserById,
   getCachedUserRegistry,
 } from './user-store.js';
 import {
@@ -76,14 +75,6 @@ export function findUserByPassphraseSync(attempt) {
   }
 
   return null;
-}
-
-export async function getUserById(id) {
-  if (!id) return null;
-  // The bootstrap admin lives outside the stored registry.
-  if (id === getSuperUserRecord().id) return { ...getSuperUserRecord() };
-  const stored = await findStoredUserById(id);
-  return stored ? toPublicUser(stored) : null;
 }
 
 export async function createUser({ name }) {

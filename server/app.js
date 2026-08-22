@@ -23,21 +23,8 @@ import {
   createUser,
   findUserByPassphrase,
   getGuestUser,
-  getUserById,
   publicUserProfile,
 } from './users.js';
-import {
-  addContactPair,
-  appendChatMessage,
-  contactCodeForUser,
-  findUserByContactCode,
-  getContacts,
-  getMessages,
-  isContact,
-  lastMessageInfo,
-  normalizeContactCode,
-  setContactAlias,
-} from './chat-store.js';
 import {
   getProfileSettings,
   saveProfileSettings,
@@ -1080,154 +1067,6 @@ export function createApp() {
     }
   });
 
-  // ---- Contacts & one-to-one chat ----
-  //
-  // Users share a short public contact code; adding it creates a mutual
-  // contact. Messages are translated at send time into the language the
-  // SENDER selected (lang2), so the receiver always sees the sender's
-  // chosen language, as text or on-demand audio in the sender's voice.
-
-  app.get('/api/contacts', requireAppAuth, async (req, res) => {
-    try {
-      const entries = await getContacts(req.user.id);
-      const contacts = [];
-      for (const entry of entries) {
-        const user = await getUserById(entry.id);
-        if (!user) continue;
-        const last = await lastMessageInfo(req.user.id, entry.id);
-        contacts.push({
-          id: user.id,
-          // The alias chosen when adding the contact wins over the profile name.
-          name: entry.alias || user.name,
-          code: contactCodeForUser(user.id),
-          lastMessageId: last?.id ?? null,
-          lastMessageFrom: last?.from ?? null,
-          lastMessageAt: last?.createdAt ?? null,
-        });
-      }
-      res.json({ code: contactCodeForUser(req.user.id), userId: req.user.id, contacts });
-    } catch (err) {
-      console.error('Contacts list error:', err);
-      res.status(500).json({ error: 'Could not load contacts' });
-    }
-  });
-
-  app.post('/api/contacts', requireAppAuth, async (req, res) => {
-    const code = normalizeContactCode(req.body?.code);
-    const alias = String(req.body?.name || '').trim().slice(0, 24) || null;
-    if (!code) {
-      return res.status(400).json({ error: 'Invalid contact code' });
-    }
-    if (code === contactCodeForUser(req.user.id)) {
-      return res.status(400).json({ error: 'That is your own code' });
-    }
-    try {
-      const target = await findUserByContactCode(code);
-      if (!target) {
-        return res.status(404).json({ error: 'No user found with that code' });
-      }
-      await addContactPair(req.user.id, target.id, alias);
-      res.json({ ok: true, contact: { id: target.id, name: alias || target.name, code } });
-    } catch (err) {
-      console.error('Add contact error:', err);
-      const status = err.code === 'CONTACT_LIMIT' ? 400 : 500;
-      res.status(status).json({ error: err.message || 'Could not add contact' });
-    }
-  });
-
-  // Rename a contact for the caller only. An empty name reverts to the
-  // contact's profile name.
-  app.patch('/api/contacts/:id', requireAppAuth, async (req, res) => {
-    const targetId = String(req.params.id || '').trim();
-    const alias = String(req.body?.name || '').trim().slice(0, 24) || null;
-    try {
-      const ok = await setContactAlias(req.user.id, targetId, alias);
-      if (!ok) {
-        return res.status(404).json({ error: 'Not one of your contacts' });
-      }
-      const user = await getUserById(targetId);
-      res.json({
-        ok: true,
-        contact: { id: targetId, name: alias || user?.name || 'Contact', code: contactCodeForUser(targetId) },
-      });
-    } catch (err) {
-      console.error('Rename contact error:', err);
-      res.status(500).json({ error: 'Could not rename contact' });
-    }
-  });
-
-  app.post('/api/chat/send', requireAppAuth, converseRateLimit, async (req, res) => {
-    const openai = requireOpenAI(res);
-    if (!openai) return;
-
-    const to = String(req.body?.to || '').trim();
-    const rawText = String(req.body?.text || '').trim();
-    const lang1 = String(req.body?.lang1 || '').toLowerCase().trim();
-    const lang2 = String(req.body?.lang2 || '').toLowerCase().trim();
-
-    if (!rawText) {
-      return res.status(400).json({ error: 'Text is required' });
-    }
-    if (rawText.length > 8000) {
-      return res.status(400).json({ error: 'Message is too long' });
-    }
-    if (!validateLanguagePair(lang1, lang2, res)) return;
-    if (!(await isContact(req.user.id, to))) {
-      return res.status(403).json({ error: 'Not one of your contacts' });
-    }
-
-    try {
-      const preDetected = detectLanguageInPair(rawText, lang1, lang2);
-      let accumulated = '';
-      await translateTextStream(openai, rawText, lang1, lang2, [], (chunk) => {
-        accumulated += chunk;
-      }, { detected: preDetected });
-      const t = finalizeTranslation(rawText, accumulated, lang1, lang2, preDetected);
-
-      // Same rule as the translator above the chat: the message is delivered
-      // in the OTHER language of the pair — writing in lang1 delivers lang2
-      // and writing in lang2 delivers lang1 (undetected text targets lang1,
-      // mirroring buildTranslationUserMessage).
-      const deliveredLang = t.detectedLanguage === lang1 ? lang2 : lang1;
-      const deliveredText = t.translatedText;
-      if (!deliveredText?.trim()) {
-        return res.status(502).json({ error: 'Translation failed — try again' });
-      }
-
-      const message = await appendChatMessage({
-        from: req.user.id,
-        to,
-        text: deliveredText,
-        sourceText: t.sourceText,
-        sourceLang: t.detectedLanguage,
-        targetLang: deliveredLang,
-      });
-      res.json({ ok: true, message });
-    } catch (err) {
-      console.error('Chat send error:', err);
-      res.status(500).json({ error: formatApiError(err) });
-    }
-  });
-
-  app.get('/api/chat/messages', requireAppAuth, async (req, res) => {
-    const withId = String(req.query.with || '').trim();
-    const after = String(req.query.after || '').trim() || null;
-    if (!withId) {
-      return res.status(400).json({ error: 'Contact id is required' });
-    }
-    if (!(await isContact(req.user.id, withId))) {
-      return res.status(403).json({ error: 'Not one of your contacts' });
-    }
-    try {
-      const messages = await getMessages(req.user.id, withId, { after });
-      res.set('Cache-Control', 'no-store');
-      res.json({ messages });
-    } catch (err) {
-      console.error('Chat messages error:', err);
-      res.status(500).json({ error: 'Could not load messages' });
-    }
-  });
-
   app.post('/api/speak', requireAppAuth, speakRateLimit, async (req, res) => {
     const openai = requireOpenAI(res);
     if (!openai) return;
@@ -1240,28 +1079,10 @@ export function createApp() {
     const langCode = lang ? String(lang).toLowerCase().trim() : null;
 
     try {
-      // Chat audio plays in the SENDER's voice: a receiver may request the
-      // audio of a contact's message via speakerId. Only contacts qualify.
-      const speakerId = String(req.body.speakerId || '').trim() || null;
-      let voiceOwner = req.user;
-      let ownerSlot;
-      let voiceProfile;
-      if (speakerId && speakerId !== req.user.id) {
-        if (!(await isContact(req.user.id, speakerId))) {
-          return res.status(403).json({ error: 'Not one of your contacts' });
-        }
-        const speaker = await getUserById(speakerId);
-        if (!speaker) {
-          return res.status(404).json({ error: 'Speaker not found' });
-        }
-        voiceOwner = speaker;
-        ownerSlot = 1;
-        voiceProfile = await getVoiceProfile(speakerId, ownerSlot);
-      } else {
-        ownerSlot = requireProfileSlot(req, res);
-        if (ownerSlot == null) return;
-        voiceProfile = await getVoiceProfile(req.user.id, ownerSlot);
-      }
+      const voiceOwner = req.user;
+      const ownerSlot = requireProfileSlot(req, res);
+      if (ownerSlot == null) return;
+      const voiceProfile = await getVoiceProfile(req.user.id, ownerSlot);
 
       // On-demand v3 audio: the user's instant clone on eleven_v3, the only
       // model that speaks languages outside the flash set (e.g. Thai) in
